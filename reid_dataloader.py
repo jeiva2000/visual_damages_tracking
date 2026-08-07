@@ -521,6 +521,12 @@ class ReIDEpisodeDataset(Dataset):
             return None
         return before, after
 
+    # mínimo de observaciones reales que debe conservar `before` (la porción
+    # que termina en el banco como "true match") tras un split sintético --
+    # ver el comentario dentro de _try_synthetic_split sobre por qué hace
+    # falta este piso.
+    MIN_BEFORE_LEN_SYNTHETIC_SPLIT = 2
+
     def _try_synthetic_split(self, identity: IdentityTrack):
         """Corta un track SIN brecha real en un punto artificial para generar
         un positivo (ver docstring del módulo). Con `synthetic_gap_max=0`
@@ -529,7 +535,27 @@ class ReIDEpisodeDataset(Dataset):
         `synthetic_gap_max>0`, además descarta una ventana de 1..
         synthetic_gap_max observaciones alrededor del corte, simulando la
         estructura de una oclusión (un hueco en el tiempo) aunque no haya
-        pasado de verdad -- un positivo más parecido al caso real."""
+        pasado de verdad -- un positivo más parecido al caso real.
+
+        OJO con `synthetic_gap_max` grande relativo a la longitud del track:
+        `before_end`/`after_start` se clampean contra los bordes del track
+        (ver abajo), así que un gap grande en un track corto puede dejar
+        `before` con 1 sola observación real -- ese slot del banco queda
+        con num_track_history-1 posiciones enmascaradas (ver
+        _load_track_history_crops), una representación tan pobre del "true
+        match" que el modelo puede aprender a tratarla como sospechosa y
+        preferir "no match" -- verificado empíricamente: con
+        synthetic_gap_max=80 sobre el dataset real, ~38% de los splits en
+        test (tracks más cortos en promedio que train/val, y con
+        force_reid=True exponiendo el 100% de los episodios a este código,
+        no solo el ~60% de val) quedaban con `before` de 1 observación,
+        contra ~24% en train -- consistente con el colapso de match_acc
+        visto en test para un modelo entrenado con ese valor. Por eso, en
+        vez de aceptar cualquier `before` no vacío, se exige un mínimo
+        (`MIN_BEFORE_LEN_SYNTHETIC_SPLIT`) y se descarta el intento (None)
+        si no se puede cumplir -- fuerza a *_sample_case`/`_sample_reid_split`
+        a caer a otro caso (NEW_TRACK o resamplear otra identidad) en vez de
+        aceptar un positivo degenerado."""
         n = len(identity.observations)
         if n < self.min_track_len_for_split:
             return None
@@ -546,7 +572,7 @@ class ReIDEpisodeDataset(Dataset):
         if after_start >= n:
             return None
         before, after = identity.observations[:before_end], identity.observations[after_start:]
-        if not before or not after:
+        if len(before) < self.MIN_BEFORE_LEN_SYNTHETIC_SPLIT or not after:
             return None
         return before, after
 

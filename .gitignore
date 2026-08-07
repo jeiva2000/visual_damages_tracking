@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.DS_Store
 
 # artefactos de entrenamiento (viven en el servidor, no en este repo)
 reid_track_query_run*/

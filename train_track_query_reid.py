@@ -412,16 +412,21 @@ def dump_example_batches(loader: DataLoader, split_name: str, out_dir: str, max_
     print(f"[OK] {n_episodes} episodios de ejemplo ({split_name}) guardados en {out_dir}")
 
 
-def build_example_loader(index: "DamageTrackIndex", args, num_episodes: int, seed: Optional[int] = None) -> DataLoader:
+def build_example_loader(
+    index: "DamageTrackIndex", args, num_episodes: int, seed: Optional[int] = None, is_train: bool = True,
+) -> DataLoader:
     """Dataset/loader aparte SOLO para dump_example_batches: siempre con
     imágenes reales (sin embedding_cache -- si el train/val real usa cache,
     bank_images/query_views serían embeddings, no píxeles, y
-    visualize_episode no podría dibujarlos)."""
+    visualize_episode no podría dibujarlos). `is_train=False` fuerza
+    synthetic_gap_max=0 -- ver el mismo criterio en run_train/run_test_eval
+    (synthetic_gap_max es una técnica de aumentación de TRAIN, no de eval)."""
     dataset = ReIDEpisodeDataset(
         index, episodes_per_epoch=num_episodes,
         max_bank_size=args.max_bank_size,
         num_track_history=args.num_track_history, history_jitter_ratio=args.history_jitter_ratio,
-        synthetic_gap_max=args.synthetic_gap_max, query_wide_factor=args.query_wide_factor, seed=seed,
+        synthetic_gap_max=args.synthetic_gap_max if is_train else 0,
+        query_wide_factor=args.query_wide_factor, seed=seed,
     )
     return DataLoader(dataset, batch_size=num_episodes, collate_fn=collate_episodes)
 
@@ -729,7 +734,8 @@ def run_test_eval(args, device: torch.device, module: SetTrackReIDModule) -> Opt
         test_index, episodes_per_epoch=args.test_episodes,
         max_bank_size=args.max_bank_size,
         num_track_history=args.num_track_history, history_jitter_ratio=args.history_jitter_ratio,
-        synthetic_gap_max=args.synthetic_gap_max, query_wide_factor=args.query_wide_factor,
+        synthetic_gap_max=0,  # aumentación solo de TRAIN -- ver docstring de synthetic_gap_max
+        query_wide_factor=args.query_wide_factor,
         force_reid=True, seed=args.seed,  # mismos episodios entre corridas -- test comparable
         embedding_cache=test_cache,
         return_video_ids=True,  # métricas de confusión intra/inter-secuencia, ver _intra_inter_confusion
@@ -825,7 +831,8 @@ def run_train(args):
         val_index, episodes_per_epoch=args.val_episodes,
         max_bank_size=args.max_bank_size,
         num_track_history=args.num_track_history, history_jitter_ratio=args.history_jitter_ratio,
-        synthetic_gap_max=args.synthetic_gap_max, query_wide_factor=args.query_wide_factor,
+        synthetic_gap_max=0,  # aumentación solo de TRAIN -- ver docstring de synthetic_gap_max
+        query_wide_factor=args.query_wide_factor,
         seed=args.seed,  # mismos episodios epoch a epoch -- val comparable de verdad
         embedding_cache=val_cache,
         return_video_ids=True,  # métricas de confusión intra/inter-secuencia, ver _intra_inter_confusion
@@ -851,7 +858,7 @@ def run_train(args):
         examples_dir = os.path.join(args.output_dir, "batch_examples")
         os.makedirs(examples_dir, exist_ok=True)
         train_example_loader = build_example_loader(train_index, args, args.num_example_episodes)
-        val_example_loader = build_example_loader(val_index, args, args.num_example_episodes, seed=args.seed)
+        val_example_loader = build_example_loader(val_index, args, args.num_example_episodes, seed=args.seed, is_train=False)
         dump_example_batches(train_example_loader, "train", examples_dir)
         dump_example_batches(val_example_loader, "val", examples_dir)
 
@@ -1056,7 +1063,9 @@ def parse_args():
     train_p.add_argument("--synthetic-gap-max", type=int, default=0,
                           help="0 (default) = corte sintético en un solo punto (sin gap real). >0: descarta "
                                "hasta esa cantidad de observaciones alrededor del corte, simulando una "
-                               "oclusión -- ver _try_synthetic_split en reid_dataloader.py.")
+                               "oclusión -- ver _try_synthetic_split en reid_dataloader.py. Solo aplica a "
+                               "TRAIN -- val/test siempre usan 0 (comparabilidad entre corridas/epochs, "
+                               "ver run_train/run_test_eval), independientemente de este flag.")
     train_p.add_argument("--query-wide-factor", type=float, default=2.5,
                           help="Factor de expansión del bbox para la vista AMPLIA de la query (contexto "
                                "de pieza) -- ver _load_query_views en reid_dataloader.py.")
