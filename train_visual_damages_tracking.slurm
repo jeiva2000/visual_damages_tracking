@@ -25,7 +25,7 @@ mkdir -p logs
 # (--train-data-root/--val-data-root explícitos sí lo perderían).
 export VDT_DATASET_BASE=/home/serperzar/datasets/dataset_split_2
 DINOV2_MODEL=${DINOV2_MODEL:-facebook/dinov2-small}
-OUTPUT_DIR=${OUTPUT_DIR:-reid_track_query_run_${SLURM_JOB_ID:-run}}
+OUTPUT_DIR=${OUTPUT_DIR:-reid_track_query_run_querywide_9}
 
 # --- Entorno conda ---
 # Este script NO compila nada de CUDA (train_track_query_reid.py es PyTorch +
@@ -41,4 +41,7 @@ python3 train_track_query_reid.py train \
     --train-split train --val-split val \
     --dropout 0.3 --weight-decay 1e-3 \
     --dinov2-model-name "$DINOV2_MODEL" \
+    --query-wide-factor 9 --synthetic-gap-max 80 \
+    --use-hierarchical-sampler --pk-sequences-per-batch 2 --pk-tracks-per-sequence 6 \
+    --proj-dim 128 \
     --output-dir "$OUTPUT_DIR"
