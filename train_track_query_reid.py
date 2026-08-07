@@ -65,11 +65,16 @@ from hierarchical_pk_sampler import build_track_pk_sampler
 # Misma convención que build_track_index.py: los splits del dataset viven en
 # rutas fijas del servidor, así no hay que repetir la ruta completa a mano
 # cada vez -- `--split train/val/test` alcanza. `--data_root` sigue
-# disponible para apuntar a otro lado (ej. un dataset de prueba local).
+# disponible para apuntar a otro lado (ej. un dataset de prueba local), pero
+# OJO: bypassea SPLIT_OVERRIDES (ver resolve_sequence_dirs) -- para correr
+# este mismo script en otra máquina con el dataset en otra base, preferir
+# la env var VDT_DATASET_BASE (mantiene SPLIT_OVERRIDES) en vez de
+# --train-data-root/--val-data-root/--test-data-root.
+_DATASET_BASE = os.environ.get("VDT_DATASET_BASE", "/mnt/Disk2/datasets/dataset_split_2")
 DATA_ROOTS = {
-    "train": "/mnt/Disk2/datasets/dataset_split_2/train",
-    "val":   "/mnt/Disk2/datasets/dataset_split_2/val",
-    "test":  "/mnt/Disk2/datasets/dataset_split_2/test",
+    "train": f"{_DATASET_BASE}/train",
+    "val":   f"{_DATASET_BASE}/val",
+    "test":  f"{_DATASET_BASE}/test",
 }
 
 
