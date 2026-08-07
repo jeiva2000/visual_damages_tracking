@@ -291,6 +291,7 @@ class ReIDEpisodeDataset(Dataset):
         transform=None,
         return_debug_info: bool = False,
         return_video_ids: bool = False,
+        pk_driven: bool = False,
         force_reid: bool = False,
         seed: Optional[int] = None,
         embedding_cache: Optional[PrecomputedEmbeddingCache] = None,
@@ -348,6 +349,23 @@ class ReIDEpisodeDataset(Dataset):
         # entrenar. Requiere el collate_fn dedicado (ver
         # collate_episodes_with_video_ids), porque son strings, no tensores.
         self.return_video_ids = return_video_ids
+        # si se fija, `idx` (el que le pasa el DataLoader, normalmente
+        # ignorado -- ver más abajo) identifica directamente la posición en
+        # `track_index.tracks` que ancla ESTE episodio, en vez de
+        # sample_random_identity() completamente al azar. Pensado para
+        # conectar HierarchicalPKSampler (ver hierarchical_pk_sampler.py,
+        # TrackAnchorPool/build_track_pk_sampler) como `batch_sampler` del
+        # DataLoader de train -- así se controla qué P secuencias x K tracks
+        # aparecen como ancla en cada batch, sin tocar el resto de la
+        # construcción del episodio (banco de distractores, casos
+        # REAL_REID/SYNTHETIC_SPLIT/NEW_TRACK, shuffle, etc., todo sigue
+        # igual). Requiere que `track_index` sea EXACTAMENTE el mismo objeto
+        # (mismo orden de `.tracks`) con el que se construyó el
+        # TrackAnchorPool -- si no, `idx` apunta a un track distinto del que
+        # cree el sampler. No tiene efecto si force_reid=True (ese modo ya
+        # resamplea explícitamente la identidad de referencia, ver
+        # _sample_reid_split) -- pk_driven es solo para train.
+        self.pk_driven = pk_driven
         # para el dataset de TEST (ver run_test en train_track_query_reid.py):
         # fuerza a que la query principal SIEMPRE sea un caso real de
         # reidentificación (REAL_REID o SYNTHETIC_SPLIT) -- nunca NEW_TRACK --
@@ -578,7 +596,10 @@ class ReIDEpisodeDataset(Dataset):
             case, reference_identity, split = self._sample_reid_split()
         else:
             case = self._sample_case()
-            reference_identity = self.track_index.sample_random_identity()
+            reference_identity = (
+                self.track_index.tracks[idx] if self.pk_driven
+                else self.track_index.sample_random_identity()
+            )
 
             split = None
             if case == QueryCase.REAL_REID:

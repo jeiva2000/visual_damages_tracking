@@ -60,6 +60,7 @@ from reid_dataloader import (
 )
 from reid_track_query_module import DINOv2Encoder
 from set_reid_model import SetTrackReIDModule
+from hierarchical_pk_sampler import build_track_pk_sampler
 
 # Misma convención que build_track_index.py: los splits del dataset viven en
 # rutas fijas del servidor, así no hay que repetir la ruta completa a mano
@@ -351,16 +352,32 @@ def run_dump_batches(args):
         sequence_dirs=sequence_dirs,
     )
 
-    dataset = ReIDEpisodeDataset(
-        track_index,
-        episodes_per_epoch=args.num_batches * args.batch_size,
+    dataset_kwargs = dict(
         max_bank_size=args.max_bank_size,
         num_track_history=args.num_track_history,
         history_jitter_ratio=args.history_jitter_ratio,
         synthetic_gap_max=args.synthetic_gap_max,
         query_wide_factor=args.query_wide_factor,
     )
-    loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_episodes)
+    if args.use_hierarchical_sampler:
+        pk_sampler = build_track_pk_sampler(
+            track_index, P=args.pk_sequences_per_batch, K=args.pk_tracks_per_sequence,
+            allow_replacement_within_sequence=not args.pk_no_replacement,
+        )
+        effective_batch_size = args.pk_sequences_per_batch * args.pk_tracks_per_sequence
+        print(f"[INFO] HierarchicalPKSampler activo: P={args.pk_sequences_per_batch} "
+              f"K={args.pk_tracks_per_sequence} -> batch_size efectivo={effective_batch_size}, "
+              f"{len(pk_sampler)} batches/época (--batch-size se ignora)")
+        dataset = ReIDEpisodeDataset(
+            track_index, episodes_per_epoch=len(pk_sampler) * effective_batch_size,
+            pk_driven=True, **dataset_kwargs,
+        )
+        loader = DataLoader(dataset, batch_sampler=pk_sampler, collate_fn=collate_episodes)
+    else:
+        dataset = ReIDEpisodeDataset(
+            track_index, episodes_per_epoch=args.num_batches * args.batch_size, **dataset_kwargs,
+        )
+        loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_episodes)
 
     os.makedirs(args.outdir, exist_ok=True)
     saved = 0
@@ -492,6 +509,8 @@ def _intra_inter_confusion(
     total = n_intra + n_inter
     return {
         "n_wrong_picks": total,
+        "n_intra": n_intra,
+        "n_inter": n_inter,
         "intra_seq_error_rate": (n_intra / total) if total else float("nan"),
         "inter_seq_error_rate": (n_inter / total) if total else float("nan"),
     }
@@ -587,7 +606,14 @@ def run_epoch(
     identity_acc_sum, n_identity_batches = 0.0, 0
     # solo se llenan si `loader` viene de un dataset con return_video_ids=True
     # (val/test, ver collate_episodes_with_video_ids) -- train no las tiene.
-    intra_err_sum, inter_err_sum, n_confusion_batches = 0.0, 0.0, 0
+    # OJO: se acumulan CONTEOS crudos (no el ratio ya calculado por batch) --
+    # con batch_size chico (6-8), la mayoría de los batches tienen 0-3 wrong
+    # picks, así que promediar ratios por batch (cada uno casi binario:
+    # 0/0.5/1.0) le da el mismo peso a un batch con 1 evento que a uno con 5,
+    # generando oscilaciones enormes de época a época sin que el modelo haya
+    # cambiado nada real. El ratio se calcula UNA vez al final, sobre el
+    # total de la época -- eso sí es estadísticamente estable.
+    n_intra_total, n_inter_total = 0, 0
 
     desc = desc or ("train" if is_train else "val")
     desc += f" epoch {epoch}" if epoch is not None else ""
@@ -629,10 +655,8 @@ def run_epoch(
                     logits, batch["target"], batch["bank_video_ids"], batch["query_video_id"],
                     batch["bank_mask"].shape[1],
                 )
-                if conf["n_wrong_picks"] > 0:
-                    intra_err_sum += conf["intra_seq_error_rate"]
-                    inter_err_sum += conf["inter_seq_error_rate"]
-                    n_confusion_batches += 1
+                n_intra_total += conf["n_intra"]
+                n_inter_total += conf["n_inter"]
 
             pbar.set_postfix(
                 loss=f"{sums['total_loss'] / n_batches:.4f}",
@@ -643,8 +667,9 @@ def run_epoch(
 
     avg = {k: v / n_batches for k, v in sums.items()}
     avg["identity_acc"] = identity_acc_sum / n_identity_batches if n_identity_batches else float("nan")
-    avg["intra_seq_error_rate"] = intra_err_sum / n_confusion_batches if n_confusion_batches else float("nan")
-    avg["inter_seq_error_rate"] = inter_err_sum / n_confusion_batches if n_confusion_batches else float("nan")
+    n_wrong_picks_total = n_intra_total + n_inter_total
+    avg["intra_seq_error_rate"] = n_intra_total / n_wrong_picks_total if n_wrong_picks_total else float("nan")
+    avg["inter_seq_error_rate"] = n_inter_total / n_wrong_picks_total if n_wrong_picks_total else float("nan")
     return avg
 
 
@@ -739,14 +764,44 @@ def run_train(args):
     if val_cache is not None:
         print(f"[INFO] Usando cache de embeddings para val: {args.val_embedding_cache}")
 
-    train_dataset = ReIDEpisodeDataset(
-        train_index, episodes_per_epoch=args.train_episodes_per_epoch,
+    train_dataset_kwargs = dict(
         max_bank_size=args.max_bank_size,
         num_track_history=args.num_track_history, history_jitter_ratio=args.history_jitter_ratio,
         synthetic_gap_max=args.synthetic_gap_max, query_wide_factor=args.query_wide_factor,
         transform=AUGMENTED_TRANSFORM,  # ColorJitter, frena memorizar iluminación/color de train
         embedding_cache=train_cache,    # si está activo, transform arriba se ignora
     )
+    if args.use_hierarchical_sampler:
+        # controla qué P secuencias x K tracks anclan los episodios de cada
+        # batch de train (ver build_track_pk_sampler en
+        # hierarchical_pk_sampler.py, pk_driven en reid_dataloader.py) en
+        # vez de sample_random_identity() al azar -- el resto del episodio
+        # (banco de distractores, casos REAL_REID/SYNTHETIC_SPLIT/
+        # NEW_TRACK) no cambia. batch_sampler reemplaza batch_size/shuffle
+        # del DataLoader -- --batch-size se ignora acá.
+        pk_sampler = build_track_pk_sampler(
+            train_index, P=args.pk_sequences_per_batch, K=args.pk_tracks_per_sequence,
+            allow_replacement_within_sequence=not args.pk_no_replacement,
+        )
+        effective_batch_size = args.pk_sequences_per_batch * args.pk_tracks_per_sequence
+        print(f"[INFO] HierarchicalPKSampler activo: P={args.pk_sequences_per_batch} "
+              f"K={args.pk_tracks_per_sequence} -> batch_size efectivo={effective_batch_size}, "
+              f"{len(pk_sampler)} batches/época (--batch-size se ignora)")
+        train_dataset = ReIDEpisodeDataset(
+            train_index, episodes_per_epoch=len(pk_sampler) * effective_batch_size,
+            pk_driven=True, **train_dataset_kwargs,
+        )
+        train_loader = DataLoader(
+            train_dataset, batch_sampler=pk_sampler, collate_fn=collate_episodes,
+            num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
+            worker_init_fn=_seed_worker if args.num_workers > 0 else None,
+        )
+    else:
+        train_dataset = ReIDEpisodeDataset(
+            train_index, episodes_per_epoch=args.train_episodes_per_epoch, **train_dataset_kwargs,
+        )
+        train_loader = None  # se arma más abajo junto con val_loader, como antes
+
     val_dataset = ReIDEpisodeDataset(
         val_index, episodes_per_epoch=args.val_episodes,
         max_bank_size=args.max_bank_size,
@@ -758,16 +813,18 @@ def run_train(args):
     )
 
     # el sampling es generativo (cada __getitem__ arma un episodio nuevo al
-    # azar si no se fija `seed`, sin depender del índice), así que `shuffle`
-    # no aporta nada acá. train y val usan collate_fn distinto: val necesita
-    # bank_video_ids/query_video_id (strings, no tensores) para las métricas
-    # de confusión intra/inter-secuencia; train no las usa.
+    # azar si no se fija `seed`, sin depender del índice, salvo pk_driven --
+    # ver arriba), así que `shuffle` no aporta nada acá. train y val usan
+    # collate_fn distinto: val necesita bank_video_ids/query_video_id
+    # (strings, no tensores) para las métricas de confusión
+    # intra/inter-secuencia; train no las usa.
     common_loader_kwargs = dict(
         batch_size=args.batch_size,
         num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
         worker_init_fn=_seed_worker if args.num_workers > 0 else None,
     )
-    train_loader = DataLoader(train_dataset, collate_fn=collate_episodes, **common_loader_kwargs)
+    if train_loader is None:  # no armado arriba -- caso sin HierarchicalPKSampler
+        train_loader = DataLoader(train_dataset, collate_fn=collate_episodes, **common_loader_kwargs)
     val_loader = DataLoader(val_dataset, collate_fn=collate_episodes_with_video_ids, **common_loader_kwargs)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -950,6 +1007,13 @@ def parse_args():
     dump_p.add_argument("--gt-class-id", type=int, default=-1)
     dump_p.add_argument("--gt-visibility-thresh", type=float, default=0.0)
     dump_p.add_argument("--seed", type=int, default=42)
+    dump_p.add_argument("--use-hierarchical-sampler", action="store_true",
+                         help="Inspeccionar la composición de un batch armado con HierarchicalPKSampler "
+                              "(ver el flag homónimo en el subcomando train) antes de entrenar con él.")
+    dump_p.add_argument("--pk-sequences-per-batch", type=int, default=3, help="P (solo con --use-hierarchical-sampler).")
+    dump_p.add_argument("--pk-tracks-per-sequence", type=int, default=2, help="K (solo con --use-hierarchical-sampler).")
+    dump_p.add_argument("--pk-no-replacement", action="store_true",
+                         help="Ver el flag homónimo en el subcomando train.")
 
     train_p = sub.add_parser("train", help="Entrena SetTrackReIDModule con early stopping y checkpoint del mejor val")
     train_p.add_argument("--train-data-root", default=None)
@@ -984,6 +1048,28 @@ def parse_args():
                                "reidentificación (force_reid=True), no la mezcla natural de train/val.")
     train_p.add_argument("--batch-size", type=int, default=6)
     train_p.add_argument("--num-workers", type=int, default=4)
+
+    train_p.add_argument("--use-hierarchical-sampler", action="store_true",
+                          help="Controla qué P secuencias x K tracks anclan los episodios de cada batch "
+                               "de TRAIN (ver HierarchicalPKSampler/TrackAnchorPool en "
+                               "hierarchical_pk_sampler.py), en vez de sample_random_identity() "
+                               "completamente al azar -- el resto del episodio (banco de distractores "
+                               "vía hard_distractor_ratio, casos REAL_REID/SYNTHETIC_SPLIT/NEW_TRACK) no "
+                               "cambia. Solo aplica a train -- val/test siguen igual (seed fijo, "
+                               "comparabilidad entre epochs/corridas). Con esto activo, --batch-size se "
+                               "ignora: el batch queda fijo en P*K (ver --pk-sequences-per-batch/"
+                               "--pk-tracks-per-sequence).")
+    train_p.add_argument("--pk-sequences-per-batch", type=int, default=3,
+                          help="P: secuencias distintas por batch de train (solo con "
+                               "--use-hierarchical-sampler).")
+    train_p.add_argument("--pk-tracks-per-sequence", type=int, default=2,
+                          help="K: tracks distintos por secuencia por batch de train (solo con "
+                               "--use-hierarchical-sampler). batch_size efectivo = P*K.")
+    train_p.add_argument("--pk-no-replacement", action="store_true",
+                          help="Si se pasa, las secuencias con menos de K tracks quedan afuera del pool "
+                               "de secuencias utilizables en vez de completar con tracks repetidos (ver "
+                               "allow_replacement_within_sequence en HierarchicalPKSampler). Solo con "
+                               "--use-hierarchical-sampler.")
 
     train_p.add_argument("--train-embedding-cache", default=None,
                           help="Cache de PrecomputedEmbeddingCache (ver subcomando precompute-cache) para train -- "

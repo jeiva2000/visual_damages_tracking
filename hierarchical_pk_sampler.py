@@ -205,6 +205,71 @@ class HierarchicalPKSampler(Sampler[List[int]]):
             yield batch_indices
 
 
+class TrackAnchorPool:
+    """Adaptador liviano de DamageTrackIndex a la estructura `by_sequence`
+    que espera HierarchicalPKSampler (video_id -> track_id -> [índices
+    globales]), pero a granularidad de TRACK COMPLETO -- no de vista
+    individual como FlatTrackViewDataset. Pensado para controlar, vía
+    HierarchicalPKSampler(pool, ..., N=1), qué track ancla cada episodio de
+    un batch de ReIDEpisodeDataset (ver `pk_driven` en reid_dataloader.py):
+    acá no importa QUÉ vista se elige (eso lo decide ReIDEpisodeDataset
+    internamente -- historial del banco, split real/sintético, query), solo
+    QUÉ track.
+
+    Clave de la integración: `self.tracks` es el MISMO objeto (mismo orden)
+    que `track_index.tracks`, así que el índice global que el sampler
+    asigna a un track coincide exactamente con su posición en
+    `track_index.tracks` -- `ReIDEpisodeDataset.__getitem__(idx)` con
+    `pk_driven=True` hace justamente `track_index.tracks[idx]`. Si se
+    reconstruye o reordena `track_index` después de crear el pool, esa
+    correspondencia se rompe -- usar `build_track_pk_sampler` (más abajo)
+    para no tener que llevar la cuenta a mano."""
+
+    def __init__(self, track_index: DamageTrackIndex):
+        self.tracks: List = track_index.tracks
+        by_sequence: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(list))
+        for i, track in enumerate(self.tracks):
+            by_sequence[track.video_id][track.identity_id].append(i)
+        self.by_sequence: Dict[str, Dict[str, List[int]]] = {
+            seq: dict(tracks) for seq, tracks in by_sequence.items()
+        }
+
+    def __len__(self) -> int:
+        return len(self.tracks)
+
+
+def build_track_pk_sampler(
+    track_index: DamageTrackIndex,
+    P: int,
+    K: int,
+    allow_replacement_within_sequence: bool = True,
+    seed: Optional[int] = None,
+) -> HierarchicalPKSampler:
+    """Arma el HierarchicalPKSampler que controla, por batch de
+    ReIDEpisodeDataset, qué P secuencias x K tracks anclan sus episodios
+    (ver `pk_driven` en reid_dataloader.py) -- reemplaza el
+    sample_random_identity() completamente al azar por composición
+    controlada, sin tocar el resto de la construcción del episodio (banco
+    de distractores vía hard_distractor_ratio, casos
+    REAL_REID/SYNTHETIC_SPLIT/NEW_TRACK). `N=1` fijo: acá "vista" no
+    aplica -- cada track del batch ancla exactamente un episodio.
+    `allow_replacement_within_track` no tiene efecto con N=1 (una lista de
+    un solo elemento siempre "alcanza").
+
+    Usar el `track_index` YA CONSTRUIDO (build_track_index en
+    train_track_query_reid.py) y pasar el sampler resultante como
+    `batch_sampler` de un DataLoader sobre un ReIDEpisodeDataset(
+    pk_driven=True) construido con ESE MISMO `track_index` -- ver
+    docstring de TrackAnchorPool sobre por qué debe ser el mismo objeto."""
+    pool = TrackAnchorPool(track_index)
+    return HierarchicalPKSampler(
+        pool, P=P, K=K, N=1,
+        allow_replacement_within_sequence=allow_replacement_within_sequence,
+        allow_replacement_within_track=True,  # sin efecto con N=1
+        seed=seed,
+    )
+
+
 def report_batch_composition(sequence_ids: Sequence[str], track_ids: Sequence[str]) -> dict:
     """Diagnóstico de un batch ya generado (ver HierarchicalPKSampler):
     cuántas secuencias distintas, cuántos tracks distintos por secuencia, y
@@ -447,6 +512,33 @@ if __name__ == "__main__":
     view_idxs_yes = sampler3_yes._sample_view_indices(rng_probe, short_global_idxs)
     assert view_idxs_yes is not None and len(view_idxs_yes) == 4
     print(f"[INFO] allow_replacement_within_track=True  -> completa con reemplazo: {view_idxs_yes}")
+
+    print()
+    print("=== Caso 4: TrackAnchorPool/build_track_pk_sampler -- integración con ReIDEpisodeDataset ===")
+    # (ver pk_driven en reid_dataloader.py): acá NO se pasa por
+    # FlatTrackViewDataset/collate_flat_views -- el sampler itera
+    # directamente y se resuelve cada índice global contra
+    # pool.tracks[i] (== track_index.tracks[i], la invariante que explota
+    # ReIDEpisodeDataset.pk_driven), sin necesidad de imágenes ni de un
+    # segundo Dataset/DataLoader.
+    index4 = _make_index(n_videos=4, tracks_per_video=5, obs_per_track_fn=10)
+    pool = TrackAnchorPool(index4)
+    P4, K4 = 3, 2
+    pk_sampler = build_track_pk_sampler(index4, P=P4, K=K4, seed=0)
+    print(f"[INFO] {len(pk_sampler)} batches/época (4 secuencias // P={P4}), "
+          f"batch_size esperado = P*K = {P4 * K4}")
+
+    pk_batch = next(iter(pk_sampler))
+    resolved = [(pool.tracks[i].video_id, pool.tracks[i].identity_id) for i in pk_batch]
+    seq_ids, track_ids = zip(*resolved)
+    pk_report = report_batch_composition(seq_ids, track_ids)
+    print(f"batch_size real={pk_report['batch_size']}  n_sequences={pk_report['n_sequences']}")
+    print("tracks_per_sequence:", pk_report["tracks_per_sequence"])
+    assert pk_report["batch_size"] == P4 * K4
+    assert pk_report["n_sequences"] == P4
+    assert all(v == K4 for v in pk_report["tracks_per_sequence"].values())
+    assert len(set(pk_batch)) == len(pk_batch)  # sin reemplazo (4 secuencias con 5 tracks c/u, alcanza sin repetir)
+    print("[OK] TrackAnchorPool/build_track_pk_sampler resuelven índices únicos con la composición P x K esperada")
 
     print()
     print("[OK] smoke test completado sin errores")
