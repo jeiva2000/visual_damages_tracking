@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+
+# artefactos de entrenamiento (viven en el servidor, no en este repo)
+reid_track_query_run*/
+reid_batch_dump/
+*.pt
+*.jpg
+*.jpeg
+*.png
+log_*.txt
+sweep.log
