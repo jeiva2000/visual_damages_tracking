@@ -458,7 +458,12 @@ def _epoch_accuracies(logits: torch.Tensor, target: torch.Tensor, max_bank_size:
     correcto o "no match"). match_acc: acierto de la decisión binaria "hay
     match o no" (colapsa los candidatos en una sola clase "match").
     identity_acc: acierto de CUÁL candidato, SOLO sobre episodios donde de
-    verdad hay match -- no tiene sentido medirlo en no-match."""
+    verdad hay match -- no tiene sentido medirlo en no-match. También
+    devuelve `n_correct_identity`/`n_match_total` (conteos crudos, no el
+    ratio) -- ver run_epoch, que los acumula sobre toda la época en vez de
+    promediar `identity_acc` ya calculado por batch (mismo motivo que
+    _intra_inter_confusion: con pocos episodios con match por batch, esa
+    ratio es casi binaria y promediarla sin ponderar genera ruido enorme)."""
     pred = logits.argmax(dim=-1)
     acc = (pred == target).float().mean().item()
 
@@ -466,12 +471,18 @@ def _epoch_accuracies(logits: torch.Tensor, target: torch.Tensor, max_bank_size:
     true_is_match = target != max_bank_size
     match_acc = (pred_is_match == true_is_match).float().mean().item()
 
-    if true_is_match.any():
-        identity_acc = (pred[true_is_match] == target[true_is_match]).float().mean().item()
+    n_match_total = int(true_is_match.sum().item())
+    if n_match_total > 0:
+        n_correct_identity = int((pred[true_is_match] == target[true_is_match]).sum().item())
+        identity_acc = n_correct_identity / n_match_total
     else:
+        n_correct_identity = 0
         identity_acc = float("nan")
 
-    return {"acc": acc, "match_acc": match_acc, "identity_acc": identity_acc}
+    return {
+        "acc": acc, "match_acc": match_acc, "identity_acc": identity_acc,
+        "n_correct_identity": n_correct_identity, "n_match_total": n_match_total,
+    }
 
 
 @torch.no_grad()
@@ -603,7 +614,11 @@ def run_epoch(
 
     sums = {"total_loss": 0.0, "acc": 0.0, "match_acc": 0.0}
     n_batches = 0
-    identity_acc_sum, n_identity_batches = 0.0, 0
+    # conteos crudos, no el ratio por batch -- mismo motivo que
+    # n_intra_total/n_inter_total más abajo: con pocos episodios con match
+    # por batch, promediar identity_acc ya calculado por batch es casi
+    # binario y genera ruido enorme entre épocas sin cambio real del modelo.
+    n_correct_identity_total, n_match_total = 0, 0
     # solo se llenan si `loader` viene de un dataset con return_video_ids=True
     # (val/test, ver collate_episodes_with_video_ids) -- train no las tiene.
     # OJO: se acumulan CONTEOS crudos (no el ratio ya calculado por batch) --
@@ -645,9 +660,8 @@ def run_epoch(
             sums["total_loss"] += loss.item()
             sums["acc"] += accs["acc"]
             sums["match_acc"] += accs["match_acc"]
-            if not math.isnan(accs["identity_acc"]):
-                identity_acc_sum += accs["identity_acc"]
-                n_identity_batches += 1
+            n_correct_identity_total += accs["n_correct_identity"]
+            n_match_total += accs["n_match_total"]
             n_batches += 1
 
             if "bank_video_ids" in batch:
@@ -662,11 +676,11 @@ def run_epoch(
                 loss=f"{sums['total_loss'] / n_batches:.4f}",
                 acc=f"{sums['acc'] / n_batches:.3f}",
                 match_acc=f"{sums['match_acc'] / n_batches:.3f}",
-                id_acc=f"{(identity_acc_sum / n_identity_batches) if n_identity_batches else float('nan'):.3f}",
+                id_acc=f"{(n_correct_identity_total / n_match_total) if n_match_total else float('nan'):.3f}",
             )
 
     avg = {k: v / n_batches for k, v in sums.items()}
-    avg["identity_acc"] = identity_acc_sum / n_identity_batches if n_identity_batches else float("nan")
+    avg["identity_acc"] = n_correct_identity_total / n_match_total if n_match_total else float("nan")
     n_wrong_picks_total = n_intra_total + n_inter_total
     avg["intra_seq_error_rate"] = n_intra_total / n_wrong_picks_total if n_wrong_picks_total else float("nan")
     avg["inter_seq_error_rate"] = n_inter_total / n_wrong_picks_total if n_wrong_picks_total else float("nan")
