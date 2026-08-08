@@ -267,10 +267,22 @@ class MatchScorer(nn.Module):
     fuerza siempre una asignación a algún candidato, aunque ninguno sea en
     realidad el correcto.
 
-    Entrenar con cross-entropy estándar sobre el índice del track correcto
-    (o k, la clase no-match) -- no con triplet loss sobre embeddings
-    sueltos: eso optimiza distancias relativas entre pares, esto optimiza
-    directamente la decisión de k+1 clases que de verdad importa.
+    Entrenar con cross-entropy estándar sobre el índice del candidato
+    correcto -- no con triplet loss sobre embeddings sueltos: eso optimiza
+    distancias relativas entre pares, esto optimiza directamente la
+    decisión de k clases que de verdad importa.
+
+    El candidato "new" (objeto genuinamente nuevo, sin match en el banco)
+    NO tiene columna propia acá -- es un candidato más dentro de
+    `track_summary`, agregado por TrackReIDModel vía un embedding
+    aprendible que participa en el mismo cross-attention y en el mismo
+    bilinear que los candidatos reales (ver TrackReIDModel._append_new_slot).
+    Antes existía un `no_match_logit` como parámetro libre desconectado de
+    la query -- el cross-entropy podía satisfacer los casos NEW_TRACK
+    ajustando solo ese escalar, sin que el gradiente pasara por el
+    bilinear/atención, diluyendo la señal de identidad en esa fracción del
+    batch. Con "new" como candidato homogéneo, un solo mecanismo aprende
+    ambas decisiones.
     """
 
     def __init__(self, embed_dim: int, hidden_dim: int = None, dropout: float = 0.1):
@@ -282,25 +294,21 @@ class MatchScorer(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
         )
-        # logit aprendido para "no match" -- no depende de ningún track
-        # candidato puntual (a diferencia de los otros k logits, que sí
-        # comparan contra un track específico), por eso es un parámetro
-        # libre en vez de salir del bilinear.
-        self.no_match_logit = nn.Parameter(torch.zeros(1))
 
     def forward(
         self, q_new: torch.Tensor, track_summary: torch.Tensor, bank_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         """
         q_new: (B, 1, D)
-        track_summary: (B, k, D)
-        bank_mask: opcional, (B, k) bool -- True = track candidato válido
-            (banco con padding, menos de k candidatos reales en este
-            episodio). Los logits de slots inválidos se enmascaran a -inf
-            antes del softmax/cross-entropy.
+        track_summary: (B, k, D) -- incluye el candidato "new" (ver
+            TrackReIDModel._append_new_slot), no hace falta tratarlo aparte.
+        bank_mask: opcional, (B, k) bool -- True = candidato válido (banco
+            con padding, menos de k candidatos reales en este episodio; el
+            slot "new" siempre es válido). Los logits de slots inválidos se
+            enmascaran a -inf antes del softmax/cross-entropy.
 
         Returns:
-            logits: (B, k+1) -- primeras k columnas = track i, última = no-match
+            logits: (B, k) -- una columna por candidato de track_summary
         """
         B, k, D = track_summary.shape
         q_expanded = q_new.expand(-1, k, -1)  # (B, k, D)
@@ -309,8 +317,7 @@ class MatchScorer(nn.Module):
         if bank_mask is not None:
             scores = scores.masked_fill(~bank_mask, float("-inf"))
 
-        no_match_col = self.no_match_logit.expand(B, 1)
-        return torch.cat([scores, no_match_col], dim=-1)  # (B, k+1)
+        return scores
 
 
 class TrackReIDModel(nn.Module):
@@ -337,10 +344,23 @@ class TrackReIDModel(nn.Module):
          de la del banco -- ver AttentionPool) resume esas 2 salidas en un
          solo `q_new` antes de pasarlo al scorer.
 
-    forward(): modo entrenamiento -- devuelve logits (B, k+1) listos para
-    F.cross_entropy contra el índice del track correcto (o k = no-match).
+    El candidato "new" (objeto genuinamente nuevo, sin match real en el
+    banco) es un embedding aprendible (`self.new_embedding`) que se agrega
+    como un track MÁS de la galería, con una sola "vista" válida -- el
+    propio embedding, sin observaciones reales -- ANTES de `self.intra_track`
+    (ver `_append_new_slot`). Así pasa por el MISMO cross-attention contra
+    la query y el MISMO bilinear de `self.scorer` que los candidatos reales,
+    en vez de vivir como un logit aparte desconectado de la query (ver
+    docstring de MatchScorer sobre por qué el diseño anterior diluía la
+    señal de identidad en los casos NEW_TRACK). Siempre se agrega al final
+    del banco, así el índice k (0-indexed, justo después de los k
+    candidatos reales) sigue siendo "no match" -- mismo target que ya usa
+    reid_dataloader.py, sin tocarlo.
 
-    predict(): modo inferencia -- devuelve match_id (o None si "no match")
+    forward(): modo entrenamiento -- devuelve logits (B, k+1) listos para
+    F.cross_entropy contra el índice del track correcto (o k = "new").
+
+    predict(): modo inferencia -- devuelve match_id (o None si "new")
     por elemento del batch, más los pesos de atención para debug/
     interpretabilidad (ver CrossAttentionMatcher).
     """
@@ -355,6 +375,38 @@ class TrackReIDModel(nn.Module):
         self.matcher = CrossAttentionMatcher(embed_dim, num_heads=num_heads, dropout=dropout)
         self.query_pool = AttentionPool(embed_dim, dropout=dropout)
         self.scorer = MatchScorer(embed_dim, dropout=dropout)
+        # candidato "new" -- ver docstring de la clase. Escala 0.02 igual
+        # que pool_query en AttentionPool (mismo criterio de init chica).
+        self.new_embedding = nn.Parameter(torch.randn(1, embed_dim) * 0.02)
+
+    def _append_new_slot(
+        self,
+        gallery_views: torch.Tensor,
+        views_mask: torch.Tensor,
+        quality_score: torch.Tensor = None,
+        bank_mask: torch.Tensor = None,
+    ):
+        """Agrega `self.new_embedding` como el track k (0-indexed) de la
+        galería, con una sola vista válida -- las demás posiciones de `n`
+        quedan enmascaradas, igual que un track real corto (ver
+        IntraTrackEncoder/AttentionPool, que ya manejan menos de n vistas
+        válidas vía masking). `bank_mask` para este slot es siempre True --
+        a diferencia de los k reales, nunca es padding."""
+        B, k, n, D = gallery_views.shape
+        new_track = torch.zeros(B, 1, n, D, dtype=gallery_views.dtype, device=gallery_views.device)
+        new_track[:, :, 0, :] = self.new_embedding.expand(B, 1, D)
+        new_mask = torch.zeros(B, 1, n, dtype=torch.bool, device=views_mask.device)
+        new_mask[:, :, 0] = True
+
+        gallery_views = torch.cat([gallery_views, new_track], dim=1)
+        views_mask = torch.cat([views_mask, new_mask], dim=1)
+        if quality_score is not None:
+            new_quality = torch.zeros(B, 1, n, dtype=quality_score.dtype, device=quality_score.device)
+            quality_score = torch.cat([quality_score, new_quality], dim=1)
+        if bank_mask is not None:
+            new_bank_mask = torch.ones(B, 1, dtype=torch.bool, device=bank_mask.device)
+            bank_mask = torch.cat([bank_mask, new_bank_mask], dim=1)
+        return gallery_views, views_mask, quality_score, bank_mask
 
     def forward(
         self,
@@ -366,7 +418,8 @@ class TrackReIDModel(nn.Module):
     ) -> dict:
         """
         query_views: (B, 2, D) -- tight + wide de la detección nueva
-        gallery_views: (B, k, n, D)
+        gallery_views: (B, k, n, D) -- SIN el candidato "new", se agrega
+            adentro (ver _append_new_slot)
         views_mask: (B, k, n) bool
         quality_score: opcional (B, k, n)
         bank_mask: opcional (B, k) bool
@@ -376,6 +429,9 @@ class TrackReIDModel(nn.Module):
         q_contextualized, _ = self.intra_track(query_views.unsqueeze(1), query_mask)  # reusa el mismo módulo del banco
         q_contextualized = q_contextualized.squeeze(1)  # (B, L, D) -- descartamos el track_summary, no aplica acá
 
+        gallery_views, views_mask, quality_score, bank_mask = self._append_new_slot(
+            gallery_views, views_mask, quality_score, bank_mask
+        )
         views_contextualized, track_summary = self.intra_track(gallery_views, views_mask, quality_score)
 
         q_new_per_view, attn_weights = self.matcher(q_contextualized, views_contextualized, views_mask)  # (B, L, D)
@@ -383,9 +439,9 @@ class TrackReIDModel(nn.Module):
 
         logits = self.scorer(q_new, track_summary, bank_mask)
         return {
-            "logits": logits,              # (B, k+1)
-            "attn_weights": attn_weights,  # (B, L, k, n) -- solo debug
-            "track_summary": track_summary,  # (B, k, D) -- indexado barato aparte
+            "logits": logits,              # (B, k+1) -- última columna = candidato "new"
+            "attn_weights": attn_weights,  # (B, L, k+1, n) -- solo debug
+            "track_summary": track_summary,  # (B, k+1, D) -- indexado barato aparte
         }
 
     @torch.no_grad()
@@ -400,9 +456,12 @@ class TrackReIDModel(nn.Module):
     ):
         """track_ids (opcional, len k): mapea el índice ganador a un id real
         de track del banco; sin esto, devuelve el índice crudo (0..k-1) o
-        None si "no match"."""
+        None si "new". `gallery_views` acá es el banco SIN el candidato
+        "new" -- self.forward lo agrega adentro (ver _append_new_slot), por
+        eso `k = gallery_views.shape[1]` (el tamaño real, previo a agregarlo)
+        sigue siendo el índice correcto de "new" en `out["logits"]`."""
         out = self.forward(query_views, gallery_views, views_mask, quality_score, bank_mask)
-        pred = out["logits"].argmax(dim=-1)  # (B,), k = "no match"
+        pred = out["logits"].argmax(dim=-1)  # (B,), k = "new"
         k = gallery_views.shape[1]
         match_ids = []
         for p in pred.tolist():
@@ -507,10 +566,10 @@ if __name__ == "__main__":
 
     out = model(query_views, gallery_views, views_mask, quality_score=quality_score, bank_mask=bank_mask)
     print("logits:", out["logits"].shape)               # (B, k+1)
-    print("attn_weights:", out["attn_weights"].shape)   # (B, L, k, n)
-    print("track_summary:", out["track_summary"].shape)  # (B, k, D)
+    print("attn_weights:", out["attn_weights"].shape)   # (B, L, k+1, n)
+    print("track_summary:", out["track_summary"].shape)  # (B, k+1, D)
 
-    # target de ejemplo: batch 0 matchea el track índice 2, batch 1 es "no match" (índice k).
+    # target de ejemplo: batch 0 matchea el track índice 2, batch 1 es "new" (índice k).
     target = torch.tensor([2, k])
     loss = F.cross_entropy(out["logits"], target)
     print("loss:", loss.item())

@@ -270,9 +270,19 @@ def _denormalize_to_uint8(tensor: torch.Tensor):
     return Image.fromarray((img * 255).astype("uint8"))
 
 
+def _heat_color(value: float) -> Tuple[int, int, int]:
+    """Azul oscuro (prob ~0) -> rojo (prob ~1), lerp simple -- ver
+    `logits` en visualize_episode: con (max_bank_size + 1) candidatos,
+    scores realmente planos se ven todos azulados/parejos (~1/(N+1) cada
+    uno); una decisión con confianza real destaca un candidato en rojo."""
+    value = max(0.0, min(1.0, value))
+    lo, hi = (25, 25, 90), (230, 30, 30)
+    return tuple(int(lo[i] + value * (hi[i] - lo[i])) for i in range(3))
+
+
 def visualize_episode(
     batch: dict, episode_idx: int, out_path: str, tile_size: int = 112, label_width: int = 180, query_size: int = 224,
-    pred: Optional[int] = None,
+    pred: Optional[int] = None, logits: Optional[torch.Tensor] = None,
 ):
     """Panel izquierdo: una fila por cada track candidato válido de la
     galería, con hasta K observaciones de su historial (repartidas en el
@@ -284,10 +294,19 @@ def visualize_episode(
     abrir la imagen original.
 
     `pred` (opcional, ver _save_fail_episodes/_save_correct_episodes): el
-    índice que predijo el modelo (0..N-1 = matchea ese candidato, N = "no
-    match") -- si se pasa, se marca con "<- PRED" el slot correspondiente,
-    distinto de "<- MATCH" (la verdad, ver `target`), para ver de un
-    vistazo si se equivocó de candidato o de match/no-match."""
+    índice que predijo el modelo (0..N-1 = matchea ese candidato, N = "new")
+    -- si se pasa, se marca con "<- PRED" el slot correspondiente, distinto
+    de "<- MATCH" (la verdad, ver `target`), para ver de un vistazo si se
+    equivocó de candidato o de match/new.
+
+    `logits` (opcional, (N+1,) -- la salida cruda de MatchScorer para este
+    episodio, ver TrackReIDModel.forward): se convierte a softmax y se
+    dibuja como columna de color por candidato (heatmap, ver _heat_color) --
+    incluye una fila extra "candidato NEW" para el score del slot "new"
+    (índice N, no vive en el banco -- ver TrackReIDModel._append_new_slot,
+    no tiene crops reales que mostrar). Sirve para ver de un vistazo si el
+    scorer está discriminando o si los scores se quedan planos entre
+    candidatos (todas las celdas con un azul parecido)."""
     bank_images = batch["bank_images"][episode_idx]    # (N, K, C, H, W)
     bank_mask = batch["bank_mask"][episode_idx]         # (N,)
     query_views = batch["query_views"][episode_idx]     # (2, C, H, W) -- [tight, wide]
@@ -298,8 +317,10 @@ def visualize_episode(
     valid_bank_idxs = bank_mask.nonzero(as_tuple=True)[0].tolist()
     matched_bank_idx = target if target < N else None
     pred_bank_idx = pred if (pred is not None and pred < N) else None
+    probs = torch.softmax(logits.detach().float(), dim=-1) if logits is not None else None
+    score_col_w = 90 if probs is not None else 0
 
-    rows = []  # (label, [K tiles de historial])
+    rows = []  # (label, [K tiles de historial], score o None)
     for n in valid_bank_idxs:
         tags = []
         if n == matched_bank_idx:
@@ -307,12 +328,22 @@ def visualize_episode(
         if n == pred_bank_idx:
             tags.append("PRED")
         tag = f"  <- {'+'.join(tags)}" if tags else ""
+        score = probs[n].item() if probs is not None else None
         rows.append((
             f"candidato {n}{tag}",
             [_denormalize_to_uint8(bank_images[n, k]).resize((tile_size, tile_size)) for k in range(K)],
+            score,
         ))
+    if probs is not None:
+        tags = []
+        if matched_bank_idx is None:
+            tags.append("MATCH")
+        if pred_bank_idx is None:
+            tags.append("PRED")
+        tag = f"  <- {'+'.join(tags)}" if tags else ""
+        rows.append((f"candidato NEW{tag}", [], probs[N].item()))
 
-    left_w = label_width + K * tile_size
+    left_w = label_width + K * tile_size + score_col_w
     left_h = max(1, len(rows)) * tile_size
     label_bar_h = 22
     canvas_w = left_w + 2 * query_size
@@ -320,12 +351,24 @@ def visualize_episode(
     canvas = Image.new("RGB", (canvas_w, canvas_h), (30, 30, 30))
     draw = ImageDraw.Draw(canvas)
 
-    for r, (label, tiles) in enumerate(rows):
+    for r, (label, tiles, score) in enumerate(rows):
         y = r * tile_size
         draw.rectangle([0, y, label_width, y + tile_size], fill=(20, 20, 20))
         draw.text((8, y + tile_size // 2 - 6), label, fill=(255, 255, 0))
-        for c, tile in enumerate(tiles):
-            canvas.paste(tile, (label_width + c * tile_size, y))
+        if tiles:
+            for c, tile in enumerate(tiles):
+                canvas.paste(tile, (label_width + c * tile_size, y))
+        else:
+            # candidato NEW -- sin crops reales, ver docstring.
+            draw.rectangle([label_width, y, label_width + K * tile_size, y + tile_size], fill=(15, 15, 15))
+            draw.text(
+                (label_width + 8, y + tile_size // 2 - 6),
+                "(embedding aprendido, sin crops)", fill=(150, 150, 150),
+            )
+        if score is not None:
+            x0 = label_width + K * tile_size
+            draw.rectangle([x0, y, x0 + score_col_w, y + tile_size], fill=_heat_color(score))
+            draw.text((x0 + 10, y + tile_size // 2 - 6), f"{score:.3f}", fill=(255, 255, 255))
 
     query_label = f"query (Q): tight | wide -- GT: {'MATCH id=' + str(matched_bank_idx) if matched_bank_idx is not None else 'no match'}"
     if pred is not None:
@@ -558,13 +601,13 @@ def _save_fail_episodes(
         if n_already_saved + saved >= max_fails:
             break
         out_path = os.path.join(fails_dir, f"fail{n_already_saved + saved:04d}_wrongmatch.jpg")
-        visualize_episode(batch, episode_idx, out_path, pred=int(pred[episode_idx]))
+        visualize_episode(batch, episode_idx, out_path, pred=int(pred[episode_idx]), logits=logits[episode_idx])
         saved += 1
     for episode_idx in wrong_identity.nonzero(as_tuple=True)[0].tolist():
         if n_already_saved + saved >= max_fails:
             break
         out_path = os.path.join(fails_dir, f"fail{n_already_saved + saved:04d}_wrongidentity.jpg")
-        visualize_episode(batch, episode_idx, out_path, pred=int(pred[episode_idx]))
+        visualize_episode(batch, episode_idx, out_path, pred=int(pred[episode_idx]), logits=logits[episode_idx])
         saved += 1
     return saved
 
@@ -586,7 +629,7 @@ def _save_correct_episodes(
             break
         tag = "match" if target[episode_idx].item() < N else "nomatch"
         out_path = os.path.join(correct_dir, f"correct{n_already_saved + saved:04d}_{tag}.jpg")
-        visualize_episode(batch, episode_idx, out_path, pred=int(pred[episode_idx]))
+        visualize_episode(batch, episode_idx, out_path, pred=int(pred[episode_idx]), logits=logits[episode_idx])
         saved += 1
     return saved
 
