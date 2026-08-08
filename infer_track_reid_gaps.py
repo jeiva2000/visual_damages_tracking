@@ -53,7 +53,16 @@ python infer_track_reid_gaps.py \
 
 DEPENDENCIAS
 ------------
-pip install boxmot lap opencv-python onnxruntime torch torchvision pillow
+pip install "boxmot==18.0.0" lap opencv-python onnxruntime torch torchvision pillow
+
+OJO con la versión de boxmot -- >=19 reescribió la API pública (ya no expone
+ByteTrack/BotSort directamente en boxmot.trackers, sino una clase facade
+BoxMOT en boxmot.pipeline) y `update()` deja de devolver un np.ndarray con
+las columnas documentadas más abajo. build_tracker_factory/run_sequence acá
+están escritos y verificados contra boxmot==18.0.0 (última versión con la
+API "clásica" -- BotSort(reid_weights=..., device=..., half=..., with_reid=...),
+ByteTrack(), tracker.update(dets, img) -> np.ndarray (x1,y1,x2,y2,id,conf,cls,det_ind),
+tracker.lost_stracks). Con boxmot>=19 este script rompe.
 """
 
 import argparse
@@ -118,10 +127,18 @@ def build_detector(detector_kind: str, onnx_path: str, provider: str):
 
 # --------------------------------------------------------------------------- #
 # Tracker: dispatch bytetrack/botsort -> factory que arma una instancia
-# NUEVA por secuencia (el estado de un tracker no debe cruzar secuencias),
-# reusando el backend de ReID nativo (osnet) UNA sola vez si aplica --
-# recargar los pesos por secuencia es el cuello de botella real (mismo
-# criterio que load_reid en eval_tracking/main_track.py).
+# NUEVA por secuencia (el estado de un tracker no debe cruzar secuencias).
+#
+# API de boxmot==18.0.0 (fijada en requirements -- ver nota en el docstring
+# del módulo): BotSort.__init__ recibe `reid_weights` (Path a los pesos, NO
+# un modelo ya cargado) y arma su propio backend `ReID` internamente SOLO si
+# with_reid=True (ver boxmot/trackers/botsort/botsort.py) -- por eso, a
+# diferencia de versiones más nuevas de boxmot (>=19, que separan la carga
+# del backend de ReID vía boxmot.reid.core.ReID + reid_model=), acá NO hace
+# falta instanciar el backend de ReID a mano, alcanza con pasarle la ruta.
+# `update()` devuelve un np.ndarray CRUDO (no un wrapper con `.xyxy`/`.id`),
+# columnas (x1,y1,x2,y2,id,conf,cls,det_ind) -- ver run_sequence, que indexa
+# por columna en vez de usar esos atributos.
 # --------------------------------------------------------------------------- #
 
 def build_tracker_factory(tracker_kind: str, device: str, with_native_reid: bool, reid_weights: str):
@@ -131,19 +148,15 @@ def build_tracker_factory(tracker_kind: str, device: str, with_native_reid: bool
 
     if tracker_kind == "botsort":
         from boxmot.trackers import BotSort
-        reid_backend = None
         if with_native_reid:
-            from boxmot.reid.core import ReID
-            reid_backend = ReID(weights=Path(reid_weights), device=device, half=(device != "cpu"))
             print(f"[INFO] ReID nativo de BotSort: {reid_weights}")
         else:
             print("[INFO] BotSort SIN ReID nativo (--no-native-reid) -- solo motion+IoU")
 
         def factory():
             return BotSort(
-                reid_model=reid_backend.model if reid_backend is not None else None,
+                reid_weights=Path(reid_weights), device=device, half=(device != "cpu"),
                 with_reid=with_native_reid,
-                device=device, half=(device != "cpu"),
             )
         return factory
 
@@ -270,9 +283,11 @@ def run_sequence(
                 axis=1,
             )
         tracks = tracker.update(dets, img_bgr)
+        # tracks: np.ndarray CRUDO, columnas (x1,y1,x2,y2,id,conf,cls,det_ind)
+        # -- ver nota de versión de boxmot en build_tracker_factory.
         if len(tracks):
-            ids = tracks.id
-            xyxy = np.asarray(tracks.xyxy, dtype=np.float32)
+            ids = tracks[:, 4].astype(int)
+            xyxy = np.asarray(tracks[:, :4], dtype=np.float32)
         else:
             ids = np.empty(0, dtype=int)
             xyxy = np.empty((0, 4), dtype=np.float32)
