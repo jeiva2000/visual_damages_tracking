@@ -783,12 +783,16 @@ def _format_metrics(metrics: Dict[str, float]) -> str:
 
 
 def run_test_eval(args, device: torch.device, module: SetTrackReIDModule) -> Optional[Dict[str, float]]:
-    """Evaluación final sobre el split de test, con dos diferencias respecto
+    """Evaluación final sobre el split de test, con tres diferencias respecto
     a val: (1) carga el MEJOR checkpoint (best_model.pt), no los pesos
     actuales del módulo -- es el que mejor generalizó, no el último; (2) usa
     force_reid=True: cada episodio de test es un caso real de
     reidentificación (la query principal SIEMPRE reaparece), a diferencia
-    de train/val que usan la mezcla natural de casos (incluye NEW_TRACK)."""
+    de train/val que usan la mezcla natural de casos (incluye NEW_TRACK);
+    (3) guarda fails_test/correct_test (ver visualize_episode) en UNA sola
+    pasada -- a diferencia de fails_validation/correct_validation en
+    run_train, que solo se regeneran cuando val_loss mejora, test corre una
+    única vez al final, así que no hace falta la pasada extra."""
     test_root, test_seq_dirs = resolve_sequence_dirs(args.test_data_root, args.test_split)
     print(f"[INFO] test_root={test_root}")
 
@@ -822,11 +826,21 @@ def run_test_eval(args, device: torch.device, module: SetTrackReIDModule) -> Opt
     print(f"[OK] Cargado {best_ckpt_path} (epoch {ckpt['epoch']}, "
           f"best_val_loss={ckpt['best_val_loss']:.4f}) para evaluar en test")
 
+    fails_dir = os.path.join(args.output_dir, "fails_test")
+    correct_dir = os.path.join(args.output_dir, "correct_test")
+    for d in (fails_dir, correct_dir):
+        if os.path.exists(d):
+            shutil.rmtree(d)
+        os.makedirs(d, exist_ok=True)
+
     test_metrics = run_epoch(
         module, test_loader, device, optimizer=None,
         desc="test", precomputed=(test_cache is not None),
+        fails_dir=fails_dir, correct_dir=correct_dir,
     )
     print(f"[TEST] {_format_metrics(test_metrics)}")
+    print(f"[OK] Casos de test guardados en {fails_dir} / {correct_dir} (heatmap de scores incluido, "
+          f"ver visualize_episode)")
     with open(os.path.join(args.output_dir, "test_metrics.json"), "w") as f:
         json.dump(test_metrics, f, indent=2)
     return test_metrics
