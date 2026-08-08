@@ -485,6 +485,33 @@ def _seed_worker(worker_id):
     random.seed(torch.initial_seed() % (2 ** 32))
 
 
+def build_lr_scheduler(optimizer: torch.optim.Optimizer, args) -> torch.optim.lr_scheduler.LRScheduler:
+    """Warmup lineal (~0 -> --lr en --lr-warmup-epochs) seguido de cosine
+    decay hasta --lr * --lr-min-factor al llegar a --epochs. Un lr
+    constante durante todo el entrenamiento (como antes) desperdicia el
+    margen para ir más rápido al principio sin pagar la inestabilidad de
+    mantener ese lr alto hasta el final -- y el warmup evita que el
+    embedding "new" (init chica, ver TrackReIDModel.new_embedding) reciba
+    un salto de gradiente grande desde el arranque, antes de que el resto
+    de la cabeza se acomode.
+
+    `scheduler.step()` se llama UNA vez por epoch (no por batch, ver
+    run_train) -- T_max/total_iters están en unidades de epoch."""
+    warmup_epochs = max(0, args.lr_warmup_epochs)
+    cosine_epochs = max(1, args.epochs - warmup_epochs)
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cosine_epochs, eta_min=args.lr * args.lr_min_factor,
+    )
+    if warmup_epochs == 0:
+        return cosine
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs,
+    )
+    return torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs],
+    )
+
+
 def build_module(args, device: torch.device) -> SetTrackReIDModule:
     module = SetTrackReIDModule(
         num_heads=args.num_heads,
@@ -810,6 +837,24 @@ def run_train(args):
     torch.manual_seed(args.seed)
     device = torch.device(args.device)
 
+    if args.reid_gap_report:
+        if not args.reid_gap_onnx:
+            raise ValueError("--reid-gap-report requiere --reid-gap-onnx (checkpoint ONNX del detector)")
+        from infer_track_reid_gaps import run_reid_gap_report  # import diferido, ver --reid-gap-report
+        reid_gap_outdir = os.path.join(args.output_dir, "reid_gap_report_test")
+        print(f"[INFO] --reid-gap-report: {args.reid_gap_tracker} sobre {args.test_split} antes de entrenar "
+              f"(outdir={reid_gap_outdir})")
+        run_reid_gap_report(
+            detector=args.reid_gap_detector, onnx_path=args.reid_gap_onnx, provider=args.reid_gap_provider,
+            det_thresh=args.reid_gap_det_thresh, tracker=args.reid_gap_tracker,
+            no_native_reid=args.reid_gap_no_native_reid, reid_weights=args.reid_gap_reid_weights,
+            device=args.reid_gap_device, split=args.test_split, data_root=args.test_data_root,
+            gt_conf_thresh=args.gt_conf_thresh, gt_class_id=args.gt_class_id,
+            gt_visibility_thresh=args.gt_visibility_thresh, min_gap_frames=args.reid_gap_min_gap_frames,
+            iou_match_thresh=args.reid_gap_iou_match_thresh, max_sequences=args.reid_gap_max_sequences,
+            outdir=reid_gap_outdir, force=args.reid_gap_force,
+        )
+
     train_root, train_seq_dirs = resolve_sequence_dirs(args.train_data_root, args.train_split)
     val_root, val_seq_dirs = resolve_sequence_dirs(args.val_data_root, args.val_split)
     print(f"[INFO] train_root={train_root}")
@@ -911,6 +956,7 @@ def run_train(args):
     print(f"[INFO] {n_trainable:,} parámetros entrenables "
           f"(encoder {'des' if args.unfreeze_encoder else ''}congelado)")
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = build_lr_scheduler(optimizer, args)
 
     start_epoch = 0
     best_val_loss = float("inf")
@@ -920,6 +966,8 @@ def run_train(args):
         ckpt = torch.load(args.resume_from, map_location=device)
         module.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
+        if "scheduler" in ckpt:  # checkpoints previos al scheduler no lo traen
+            scheduler.load_state_dict(ckpt["scheduler"])
         start_epoch = ckpt["epoch"] + 1
         best_val_loss = ckpt.get("best_val_loss", float("inf"))
         print(f"[OK] Resumido desde {args.resume_from} (epoch {start_epoch}, best_val_loss={best_val_loss:.4f})")
@@ -933,11 +981,14 @@ def run_train(args):
             module, val_loader, device, optimizer=None,
             epoch=epoch, precomputed=(val_cache is not None),
         )
-        print(f"[epoch {epoch}] train: {_format_metrics(train_metrics)} | val: {_format_metrics(val_metrics)}")
+        lr_now = optimizer.param_groups[0]["lr"]
+        print(f"[epoch {epoch}] lr={lr_now:.2e} train: {_format_metrics(train_metrics)} | val: {_format_metrics(val_metrics)}")
+        scheduler.step()  # una vez por epoch, no por batch -- ver build_lr_scheduler
 
         checkpoint = {
             "model": module.state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
             "epoch": epoch,
             "best_val_loss": best_val_loss,
             "args": vars(args),
@@ -1091,6 +1142,34 @@ def parse_args():
     train_p.add_argument("--val-split", choices=list(DATA_ROOTS), default="val")
     train_p.add_argument("--test-data-root", default=None)
     train_p.add_argument("--test-split", choices=list(DATA_ROOTS), default="test")
+
+    train_p.add_argument("--reid-gap-report", action="store_true",
+                          help="Antes de entrenar, corre infer_track_reid_gaps.py sobre --test-split/"
+                               "--test-data-root para identificar los casos donde el tracker (ByteTrack/"
+                               "BotSort) NO reidentifica un track de GT tras una brecha real -- ver "
+                               "infer_track_reid_gaps.py. Requiere boxmot/onnxruntime/cv2 (deps pesadas, "
+                               "NO necesarias para entrenar sin este flag -- import diferido) y "
+                               "--reid-gap-onnx. Idempotente: si ya existe el reporte en --output-dir/"
+                               "reid_gap_report_test, se omite (ver --reid-gap-force).")
+    train_p.add_argument("--reid-gap-detector", choices=["rtv2", "rtv4"], default="rtv2")
+    train_p.add_argument("--reid-gap-onnx", default=None,
+                          help="[--reid-gap-report] Checkpoint ONNX del detector.")
+    train_p.add_argument("--reid-gap-provider", default="CUDAExecutionProvider")
+    train_p.add_argument("--reid-gap-det-thresh", type=float, default=0.4)
+    train_p.add_argument("--reid-gap-tracker", choices=["bytetrack", "botsort"], default="bytetrack")
+    train_p.add_argument("--reid-gap-no-native-reid", action="store_true",
+                          help="[--reid-gap-report, tracker=botsort] Desactiva el ReID nativo (osnet).")
+    train_p.add_argument("--reid-gap-reid-weights", default="osnet_x1_0_msmt17.pt")
+    train_p.add_argument("--reid-gap-device", default="cuda:0" if torch.cuda.is_available() else "cpu")
+    train_p.add_argument("--reid-gap-min-gap-frames", type=int, default=3)
+    train_p.add_argument("--reid-gap-iou-match-thresh", type=float, default=0.5)
+    train_p.add_argument("--reid-gap-max-sequences", type=int, default=None,
+                          help="[--reid-gap-report] Corta a las primeras N secuencias de test -- para una "
+                               "corrida rápida de prueba en vez de todo el split.")
+    train_p.add_argument("--reid-gap-force", action="store_true",
+                          help="[--reid-gap-report] Reprocesa aunque ya exista el reporte en --output-dir/"
+                               "reid_gap_report_test.")
+
     train_p.add_argument("--gt-conf-thresh", type=float, default=0.0)
     train_p.add_argument("--gt-class-id", type=int, default=-1)
     train_p.add_argument("--gt-visibility-thresh", type=float, default=0.0)
@@ -1170,6 +1249,12 @@ def parse_args():
 
     train_p.add_argument("--lr", type=float, default=1e-4)
     train_p.add_argument("--weight-decay", type=float, default=1e-4)
+    train_p.add_argument("--lr-warmup-epochs", type=int, default=3,
+                          help="Epochs de warmup lineal (lr casi 0 -> --lr) antes del cosine decay. "
+                               "0 desactiva el warmup -- ver build_lr_scheduler.")
+    train_p.add_argument("--lr-min-factor", type=float, default=0.1,
+                          help="El cosine decay converge a --lr * este factor (no a 0) al llegar a "
+                               "--epochs -- ver build_lr_scheduler.")
     train_p.add_argument("--epochs", type=int, default=100)
 
     train_p.add_argument("--patience", type=int, default=10,
