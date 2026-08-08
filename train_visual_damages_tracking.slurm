@@ -6,8 +6,8 @@
 #SBATCH --partition=main
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:a40:1             # 1x A40 en gpu04 (libre ahora mismo)
-#SBATCH --nodelist=gpu04             # comprueba antes con: scontrol show node gpu04
+#SBATCH --gres=gpu:a30:1             # 1x A30 en gpu02 (libre ahora mismo)
+#SBATCH --nodelist=gpu02             # comprueba antes con: scontrol show node gpu02
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH -t 13:00:00
@@ -44,4 +44,5 @@ python3 train_track_query_reid.py train \
     --query-wide-factor 9 --synthetic-gap-max 80 \
     --use-hierarchical-sampler --pk-sequences-per-batch 2 --pk-tracks-per-sequence 6 \
     --proj-dim 128 \
+    --lr 3e-4 --lr-warmup-epochs 3 --lr-min-factor 0.1 \
     --output-dir "$OUTPUT_DIR"
