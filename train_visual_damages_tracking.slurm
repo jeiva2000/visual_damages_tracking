@@ -43,7 +43,7 @@ python3 train_track_query_reid.py train \
     --dinov2-model-name "$DINOV2_MODEL" \
     --query-wide-factor 9 --synthetic-gap-max 80 \
     --use-hierarchical-sampler --pk-sequences-per-batch 2 --pk-tracks-per-sequence 6 \
-    --proj-dim 128 \
+    --proj-dim 64 \
     --lr 3e-4 --lr-warmup-epochs 3 --lr-min-factor 0.1 \
     --reid-gap-report --reid-gap-onnx ./checkpoints/rtdetrv2_v3_qcs_videos.onnx \
     --reid-gap-detector rtv2 --reid-gap-tracker botsort \
