@@ -53,8 +53,15 @@ class FlatTrackViewDataset(Dataset):
     GLOBALES en `self.items` -- la estructura que consume el sampler.
     """
 
-    def __init__(self, track_index: DamageTrackIndex, transform=None):
+    def __init__(self, track_index: DamageTrackIndex, transform=None, query_wide_factor: Optional[float] = None):
         self.transform = transform or DEFAULT_TRANSFORM
+        # si se pasa, cada item también trae un recorte AMPLIO (factor
+        # query_wide_factor) de la MISMA observación además del ajustado --
+        # ver train_linear_reid_head.py, que promedia ambos por observación
+        # para entrenar sobre el mismo tipo de embedding "query" (ajustada +
+        # amplia) que usa _load_query_views en reid_dataloader.py, en vez de
+        # solo el recorte ajustado aislado.
+        self.query_wide_factor = query_wide_factor
 
         self.items: List[Tuple[str, str, TrackObservation]] = []  # (video_id, identity_id, obs)
         by_sequence: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(list))
@@ -74,23 +81,33 @@ class FlatTrackViewDataset(Dataset):
         """Recorte ajustado (factor=1.0) de la observación -- suficiente
         para un encoder tipo DINOv2 sin las 2/3 escalas del banco/query de
         ReIDEpisodeDataset (acá cada item YA es una sola vista/instancia).
+        Si se pasó `query_wide_factor`, además incluye `image_wide` (mismo
+        criterio de recorte que la vista amplia de la query real).
         Reemplazar `transform`/subclasear para otro criterio de recorte."""
         video_id, track_id, obs = self.items[idx]
         from PIL import Image
         image = Image.open(obs.image_path).convert("RGB")
         image_t = self.transform(image.crop(_expand_bbox(obs.bbox, 1.0, image.size)))
-        return {"image": image_t, "sequence_id": video_id, "track_id": track_id}
+        item = {"image": image_t, "sequence_id": video_id, "track_id": track_id}
+        if self.query_wide_factor is not None:
+            wide_t = self.transform(image.crop(_expand_bbox(obs.bbox, self.query_wide_factor, image.size)))
+            item["image_wide"] = wide_t
+        return item
 
 
 def collate_flat_views(batch: List[dict]) -> dict:
-    """Apila `image`; `sequence_id`/`track_id` quedan como listas de
-    strings (no tensorizables) -- ver report_batch_composition y
-    batch_hard_triplet_loss, que las consumen directamente así."""
-    return {
+    """Apila `image` (y `image_wide` si está presente); `sequence_id`/
+    `track_id` quedan como listas de strings (no tensorizables) -- ver
+    report_batch_composition y batch_hard_triplet_loss, que las consumen
+    directamente así."""
+    out = {
         "image": torch.stack([b["image"] for b in batch], dim=0),
         "sequence_id": [b["sequence_id"] for b in batch],
         "track_id": [b["track_id"] for b in batch],
     }
+    if "image_wide" in batch[0]:
+        out["image_wide"] = torch.stack([b["image_wide"] for b in batch], dim=0)
+    return out
 
 
 class HierarchicalPKSampler(Sampler[List[int]]):

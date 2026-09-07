@@ -48,8 +48,21 @@ python infer_track_reid_gaps.py \
     --tracker botsort --reid-weights osnet_x1_0_msmt17.pt \
     --split test --outdir reid_gap_report_botsort
 
+python infer_track_reid_gaps.py \
+    --detector rtv2 --onnx path/to/rtdetrv2.onnx \
+    --tracker ocsort --split test --outdir reid_gap_report_ocsort
+
+python infer_track_reid_gaps.py \
+    --detector rtv2 --onnx path/to/rtdetrv2.onnx \
+    --tracker deepocsort --reid-weights osnet_x1_0_msmt17.pt \
+    --split test --outdir reid_gap_report_deepocsort
+
 --tracker botsort --no-native-reid mide un BotSort puramente motion+IoU
 (sin apariencia), para comparar contra ByteTrack en igualdad de condiciones.
+OcSort NUNCA tiene ReID (boxmot no le da rama de apariencia) -- queda como
+baseline motion-only. DeepOcSort SIEMPRE corre CON ReID nativo activo (no
+tiene --no-native-reid, a diferencia de botsort): es justamente el punto de
+comparación para el que existe.
 
 DEPENDENCIAS
 ------------
@@ -84,6 +97,7 @@ from train_track_query_reid import (
     discover_sequences,
     resolve_sequence_dirs,
 )
+from reid_dataloader import DamageTrackIndex
 
 import infers.infer_onnx_rtv2 as rtv2
 import infers.infer_onnx_rtv4 as rtv4
@@ -141,22 +155,133 @@ def build_detector(detector_kind: str, onnx_path: str, provider: str):
 # por columna en vez de usar esos atributos.
 # --------------------------------------------------------------------------- #
 
-def build_tracker_factory(tracker_kind: str, device: str, with_native_reid: bool, reid_weights: str):
+def _reset_track_id_counter(tracker_module_path: str) -> None:
+    """BaseTrack._count (ver basetrack.py de boxmot) es un atributo de CLASE
+    compartido por TODAS las instancias del proceso -- sin este reset, los
+    ids de una secuencia siguen la numeración acumulada de las secuencias
+    anteriores procesadas en la misma corrida (ej. empiezan en 900 en vez
+    de 1). No afecta la clasificación reidentified/new_id_born/id_swap
+    (esa lógica compara ids solo DENTRO de la misma secuencia), es puramente
+    para que los ids sean legibles en logs/videos. Envuelto en try/except
+    porque la ruta interna del módulo puede cambiar entre versiones de
+    boxmot (ya pasó de 18.x a 19.x, ver build_tracker_factory) -- si falla,
+    seguimos con los ids acumulados en vez de romper la corrida."""
+    try:
+        import importlib
+        basetrack = importlib.import_module(tracker_module_path)
+        basetrack.BaseTrack.clear_count()
+    except Exception as e:
+        print(f"[WARN] No se pudo resetear el contador de ids de {tracker_module_path} ({e}) -- los ids van a quedar acumulados entre secuencias.")
+
+
+def _build_botsort_reid_model(reid_weights: str, device: str):
+    """En boxmot 18.x, BotSort(reid_weights=...) cargaba el modelo de ReID
+    nativo directo. En 19.x (instalado en el cluster) ese kwarg ya NO existe
+    -- BotSort espera `reid_model=`, un backend YA CONSTRUIDO (con
+    .get_features(), ver boxmot/trackers/bbox/botsort/botsort.py) en vez de
+    una ruta de pesos. Pasar reid_weights= directo se ignora en silencio
+    (va a **kwargs) y deja self.model=None -> crash en tracker.update()
+    ('NoneType' object has no attribute 'get_features'). Acá se construye
+    ese backend aparte vía boxmot.reid.core.reid.ReID(...).model.
+
+    Envuelto en try/except: si esta ruta interna cambia en otra versión de
+    boxmot, cae a None (BotSort corre con with_reid=False en vez de crashear
+    -- ver build_tracker_factory)."""
+    try:
+        from boxmot.reid.core.reid import ReID
+        return ReID(weights=Path(reid_weights), device=device, half=(device != "cpu")).model
+    except Exception as e:
+        print(
+            f"[WARN] No se pudo construir el modelo de ReID nativo de BotSort ({e}) -- "
+            f"sigue SIN ReID nativo (equivalente a --no-native-reid)."
+        )
+        return None
+
+
+def build_tracker_factory(
+    tracker_kind: str, device: str, with_native_reid: bool, reid_weights: str,
+    track_thresh: float = 0.45, match_thresh: float = 0.8, track_buffer: int = 25,
+    new_track_thresh: float = 0.6, proximity_thresh: float = 0.5, appearance_thresh: float = 0.25,
+    cmc_method: str = "ecc",
+    min_hits: int = 3, iou_threshold: float = 0.3, asso_func: str = "iou",
+    delta_t: int = 3, inertia: float = 0.2,
+    w_association_emb: float = 0.5, alpha_fixed_emb: float = 0.95, aw_param: float = 0.5,
+):
+    """Hiperparámetros con los defaults ORIGINALES de boxmot (comportamiento
+    sin cambios si no se pasan) -- ver eval_tracking/sweep_ultralytics_anchor.py
+    para cómo se eligen valores tuneados (anclados en los defaults de
+    Ultralytics para bytetrack/botsort, en los propios rangos de boxmot para
+    ocsort/deepocsort) antes de fijarlos acá vía CLI/run_reid_gap_report."""
     if tracker_kind == "bytetrack":
         from boxmot.trackers import ByteTrack
-        return lambda: ByteTrack()
+
+        def factory():
+            _reset_track_id_counter("boxmot.trackers.bbox.bytetrack.basetrack")
+            return ByteTrack(track_thresh=track_thresh, match_thresh=match_thresh, track_buffer=track_buffer)
+        return factory
 
     if tracker_kind == "botsort":
         from boxmot.trackers import BotSort
+
+        reid_model = None
         if with_native_reid:
-            print(f"[INFO] ReID nativo de BotSort: {reid_weights}")
-        else:
-            print("[INFO] BotSort SIN ReID nativo (--no-native-reid) -- solo motion+IoU")
+            reid_model = _build_botsort_reid_model(reid_weights, device)
+            if reid_model is not None:
+                print(f"[INFO] ReID nativo de BotSort: {reid_weights}")
+            else:
+                with_native_reid = False  # fallback -- ya se avisó el motivo arriba
+        if not with_native_reid:
+            print("[INFO] BotSort SIN ReID nativo -- solo motion+IoU")
 
         def factory():
+            _reset_track_id_counter("boxmot.trackers.bbox.botsort.basetrack")
             return BotSort(
-                reid_weights=Path(reid_weights), device=device, half=(device != "cpu"),
+                reid_model=reid_model, device=device, half=(device != "cpu"),
                 with_reid=with_native_reid,
+                track_high_thresh=track_thresh, match_thresh=match_thresh, track_buffer=track_buffer,
+                new_track_thresh=new_track_thresh, proximity_thresh=proximity_thresh,
+                appearance_thresh=appearance_thresh, cmc_method=cmc_method,
+            )
+        return factory
+
+    if tracker_kind == "ocsort":
+        # SIN ReID -- boxmot no le da a OcSort ninguna rama de apariencia (su
+        # __init__ es min_conf/delta_t/inertia/use_byte/Q_xy_scaling/
+        # Q_s_scaling + lo que herede de BaseTracker). use_byte=False fijo:
+        # el filtro --det-thresh ya se aplica ANTES de tracker.update() (ver
+        # run_sequence), asi que la 2da etapa estilo BYTE nunca tendria
+        # detecciones de baja confianza que rescatar. No se le pasa
+        # det_thresh explicito (mismo criterio que bytetrack/botsort acá:
+        # el filtro real ya ocurrio aguas arriba).
+        from boxmot.trackers import OcSort
+
+        def factory():
+            return OcSort(
+                max_age=track_buffer, min_hits=min_hits, iou_threshold=iou_threshold,
+                asso_func=asso_func, delta_t=delta_t, inertia=inertia, use_byte=False,
+            )
+        return factory
+
+    if tracker_kind == "deepocsort":
+        # ReID SIEMPRE activo -- embedding_off/aw_off/cmc_off quedan fijos en
+        # False, nunca se exponen como flag (ver conversación: DeepOcSort
+        # tiene que evaluarse siempre CON su rama de apariencia activa).
+        from boxmot.trackers import DeepOcSort
+
+        reid_model = _build_botsort_reid_model(reid_weights, device)
+        if reid_model is None:
+            raise RuntimeError(
+                "DeepOcSort requiere ReID nativo y no se pudo construir el backend "
+                f"({reid_weights}) -- revisa --reid-weights/boxmot.reid.core.reid.ReID."
+            )
+        print(f"[INFO] ReID nativo de DeepOcSort: {reid_weights}")
+
+        def factory():
+            return DeepOcSort(
+                reid_model=reid_model, embedding_off=False, aw_off=False, cmc_off=False,
+                w_association_emb=w_association_emb, alpha_fixed_emb=alpha_fixed_emb, aw_param=aw_param,
+                max_age=track_buffer, min_hits=min_hits, iou_threshold=iou_threshold,
+                asso_func=asso_func, delta_t=delta_t, inertia=inertia,
             )
         return factory
 
@@ -240,10 +365,103 @@ def save_crop(image_path: str, bbox: Tuple[float, float, float, float], out_path
     return True
 
 
+def _run_length_encode(seq: List[int]) -> List[Tuple[int, int]]:
+    """[1,1,1,36,36,51] -> [(1,3),(36,2),(51,1)] -- para mostrar rachas de
+    id en vez de repetir cada frame (ver pred_id_sequence)."""
+    if not seq:
+        return []
+    runs = []
+    current, count = seq[0], 1
+    for v in seq[1:]:
+        if v == current:
+            count += 1
+        else:
+            runs.append((current, count))
+            current, count = v, 1
+    runs.append((current, count))
+    return runs
+
+
+def _count_required_reidentifications(
+    seq_name: str, index: DamageTrackIndex, pred_id_for_obs: Dict[Tuple[str, int], Optional[int]],
+) -> Tuple[int, List[dict], List[dict]]:
+    """Para cada identidad de GT, cuenta cuántas veces el id predicho que la
+    matchea CAMBIA de un valor a otro a lo largo de TODO su historial --
+    a diferencia de find_real_gaps (que solo mira brechas temporales >=
+    min_gap_frames en la visibilidad del GT), esto cuenta CUALQUIER cambio
+    de id emparejado, haya habido o no una brecha temporal detectada. Cada
+    cambio es, en el mundo ideal, un momento donde el tracker debería haber
+    reidentificado al mismo objeto y en cambio le puso un id distinto --
+    esta es la definición amplia de "reidentificaciones que debía hacer el
+    tracker", más laxa que new_id_born/id_swap (que solo se calculan sobre
+    brechas reales). Observaciones sin predicción emparejada (None) se
+    descartan antes de comparar -- no cuentan como "cambio" ni rompen la
+    comparación entre el id matcheado antes/después de un hueco de detección.
+
+    Devuelve (total, resumen_por_track, switch_events) -- switch_events es
+    una lista PLANA, mismo formato que los registros de new_id_born/id_swap
+    en reid_gap_report.json (sequence/gt_identity_id/frame_before/
+    frame_after/pred_id_before/pred_id_after), para poder reusar
+    TrackerFailureReIDDataset (ver tracker_failure_dataset.py) tal cual con
+    esta fuente de casos más amplia."""
+    details = []
+    switch_events = []
+    total = 0
+    for track in index.tracks:
+        non_none = [
+            (oi, pred_id_for_obs.get((track.identity_id, oi)))
+            for oi in range(len(track.observations))
+        ]
+        non_none = [(oi, pid) for oi, pid in non_none if pid is not None]
+
+        switches_for_track = 0
+        for i in range(1, len(non_none)):
+            oi_before, pid_before = non_none[i - 1]
+            oi_after, pid_after = non_none[i]
+            if pid_before != pid_after:
+                switches_for_track += 1
+                switch_events.append({
+                    "sequence": seq_name, "gt_identity_id": track.identity_id,
+                    "frame_before": track.observations[oi_before].frame_idx,
+                    "frame_after": track.observations[oi_after].frame_idx,
+                    "pred_id_before": pid_before, "pred_id_after": pid_after,
+                })
+
+        if switches_for_track:
+            ids_only = [pid for _, pid in non_none]
+            details.append({
+                "gt_identity_id": track.identity_id,
+                "n_switches": switches_for_track,
+                "pred_id_sequence": ids_only,
+                "pred_id_runs": _run_length_encode(ids_only),  # [(id, cuantos frames seguidos), ...]
+            })
+        total += switches_for_track
+    return total, details, switch_events
+
+
+def _draw_tracking_frame(img_bgr, gt_entries: List[Tuple[object, int]], ids: np.ndarray, xyxy: np.ndarray):
+    """GT en rojo (label = ultimo segmento de identity_id, el track_id del
+    gt.txt) + cajas del tracker en verde (label = id del tracker) -- para
+    inspeccionar visualmente detección/tracking, no para métricas."""
+    canvas = img_bgr.copy()
+    for track, oi in gt_entries:
+        x1, y1, x2, y2 = map(int, track.observations[oi].bbox)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 0, 255), 2)
+        short_id = track.identity_id.split("__")[-1]
+        cv2.putText(canvas, f"gt:{short_id}", (x1, max(12, y1 - 6)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+    for pid, box in zip(ids.tolist(), xyxy):
+        x1, y1, x2, y2 = map(int, box)
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 200, 0), 2)
+        cv2.putText(canvas, f"id:{pid}", (x1, min(canvas.shape[0] - 4, y2 + 16)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 0), 1, cv2.LINE_AA)
+    return canvas
+
+
 def run_sequence(
     seq_dir: str, detector_fn, tracker_factory, det_thresh: float, iou_match_thresh: float,
     min_gap_frames: int, gt_conf_thresh: float, gt_class_id: int, gt_visibility_thresh: float,
-    crops_dir: str,
+    crops_dir: str, save_video_dir: Optional[str] = None, video_fps: float = 10.0,
 ) -> List[dict]:
     seq_name = os.path.basename(seq_dir.rstrip("/"))
     img_dir = os.path.join(seq_dir, "img1")
@@ -258,10 +476,22 @@ def run_sequence(
         gt_visibility_thresh=gt_visibility_thresh, min_observations=2, sequence_dirs=[seq_dir],
     )
 
+    # GT por frame -- no depende de detección/tracking, se arma antes para
+    # poder dibujarlo en el video sin necesitar una segunda pasada.
+    gt_by_frame: Dict[int, List[Tuple[object, int]]] = {}
+    for track in index.tracks:
+        for oi, obs in enumerate(track.observations):
+            gt_by_frame.setdefault(obs.frame_idx, []).append((track, oi))
+
     # --- detección + tracking, un frame a la vez, en orden cronológico ---
     tracker = tracker_factory()
     pred_by_frame: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}  # frame -> (ids, xyxy)
     first_seen_frame: Dict[int, int] = {}  # pred_id -> primer frame en que aparece en la secuencia
+
+    video_writer = None
+    save_video_path = os.path.join(save_video_dir, f"{seq_name}.mp4") if save_video_dir else None
+    if save_video_path:
+        os.makedirs(save_video_dir, exist_ok=True)
 
     for fidx in frame_ids_sorted:
         img_bgr = cv2.imread(frame_files[fidx])
@@ -296,14 +526,20 @@ def run_sequence(
             if pid not in first_seen_frame:
                 first_seen_frame[pid] = fidx
 
+        if save_video_path:
+            if video_writer is None:
+                h, w = img_bgr.shape[:2]
+                video_writer = cv2.VideoWriter(save_video_path, cv2.VideoWriter_fourcc(*"mp4v"), video_fps, (w, h))
+            annotated = _draw_tracking_frame(img_bgr, gt_by_frame.get(fidx, []), ids, xyxy)
+            video_writer.write(annotated)
+
+    if video_writer is not None:
+        video_writer.release()
+        print(f"[OK] {seq_name}: video guardado en {save_video_path}")
+
     # --- matching GT <-> predicciones, por frame (joint, no track-por-track,
     #     para que 2 GT boxes del mismo frame no puedan reclamar la misma
     #     predicción) ---
-    gt_by_frame: Dict[int, List[Tuple[object, int]]] = {}
-    for track in index.tracks:
-        for oi, obs in enumerate(track.observations):
-            gt_by_frame.setdefault(obs.frame_idx, []).append((track, oi))
-
     pred_id_for_obs: Dict[Tuple[str, int], Optional[int]] = {}
     for fidx, entries in gt_by_frame.items():
         pred_ids, pred_xyxy = pred_by_frame.get(fidx, (np.empty(0, dtype=int), np.empty((0, 4), dtype=np.float32)))
@@ -313,6 +549,15 @@ def run_sequence(
         matched = dict(pairs)
         for gi, (track, oi) in enumerate(entries):
             pred_id_for_obs[(track.identity_id, oi)] = int(pred_ids[matched[gi]]) if gi in matched else None
+
+    n_required_reid, required_reid_details, required_reid_events = _count_required_reidentifications(
+        seq_name, index, pred_id_for_obs,
+    )
+    print(f"[REQUIRED-REID] {seq_name}: {n_required_reid} reidentificaciones necesarias (cambios de id en tracks GT, con o sin brecha temporal)")
+    for d in required_reid_details:
+        short_id = d["gt_identity_id"].split("__")[-1]
+        distinct_ids = [pid for pid, _ in d["pred_id_runs"]]
+        print(f"    id {short_id}: numero de fallos reid: {d['n_switches']}, ids creados por el tracker: {distinct_ids}")
 
     # --- clasificación de cada brecha real ---
     results = []
@@ -349,7 +594,7 @@ def run_sequence(
 
     n_new_born = sum(1 for r in results if r["outcome"] == "new_id_born")
     print(f"[OK] {seq_name}: {len(results)} brechas reales, {n_new_born} new_id_born")
-    return results
+    return results, n_required_reid, required_reid_details, required_reid_events
 
 
 # --------------------------------------------------------------------------- #
@@ -365,13 +610,38 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--det-thresh", type=float, default=0.4,
                     help="Umbral de score mínimo para pasarle una detección al tracker.")
 
-    p.add_argument("--tracker", choices=["bytetrack", "botsort"], required=True)
+    p.add_argument("--tracker", choices=["bytetrack", "botsort", "ocsort", "deepocsort"], required=True)
     p.add_argument("--no-native-reid", action="store_true",
                     help="[botsort] Desactiva el ReID nativo (osnet) -- mide un BotSort puramente "
                          "motion+IoU, en igualdad de condiciones con ByteTrack.")
     p.add_argument("--reid-weights", default="osnet_x1_0_msmt17.pt",
                     help="[botsort, salvo --no-native-reid] Pesos del backend de ReID nativo de boxmot.")
     p.add_argument("--device", default="cuda:0" if torch.cuda.is_available() else "cpu")
+
+    p.add_argument("--track-thresh", type=float, default=0.45,
+                    help="Umbral de asociación -- boxmot track_thresh (bytetrack) / track_high_thresh "
+                         "(botsort). Default = default de boxmot; ver eval_tracking/sweep.py para el "
+                         "valor tuneado (anclado en Ultralytics) antes de fijarlo acá.")
+    p.add_argument("--match-thresh", type=float, default=0.8, help="boxmot match_thresh (ambos trackers).")
+    p.add_argument("--track-buffer", type=int, default=25,
+                    help="Frames que un track perdido se mantiene vivo -- boxmot track_buffer (ambos "
+                         "trackers; default de boxmot es 25 para bytetrack, 30 para botsort -- este "
+                         "flag es compartido, pasar el valor elegido explícitamente para cada tracker).")
+    p.add_argument("--new-track-thresh", type=float, default=0.6, help="[botsort] boxmot new_track_thresh.")
+    p.add_argument("--proximity-thresh", type=float, default=0.5, help="[botsort] boxmot proximity_thresh.")
+    p.add_argument("--appearance-thresh", type=float, default=0.25, help="[botsort] boxmot appearance_thresh.")
+    p.add_argument("--cmc-method", default="ecc", choices=["ecc", "orb", "sof", "sift"],
+                    help="[botsort] boxmot cmc_method (compensación de movimiento de cámara).")
+
+    p.add_argument("--min-hits", type=int, default=3, help="[ocsort/deepocsort] boxmot min_hits (via BaseTracker).")
+    p.add_argument("--iou-threshold", type=float, default=0.3, help="[ocsort/deepocsort] boxmot iou_threshold (via BaseTracker).")
+    p.add_argument("--asso-func", default="iou", choices=["iou", "giou", "diou", "ciou", "hmiou"],
+                    help="[ocsort/deepocsort] métrica de asociación.")
+    p.add_argument("--delta-t", type=int, default=3, help="[ocsort/deepocsort] ventana temporal para velocidad/dirección.")
+    p.add_argument("--inertia", type=float, default=0.2, help="[ocsort/deepocsort] peso del término de dirección de velocidad.")
+    p.add_argument("--w-association-emb", type=float, default=0.5, help="[deepocsort] peso de apariencia en el costo de asociación.")
+    p.add_argument("--alpha-fixed-emb", type=float, default=0.95, help="[deepocsort] tasa EMA del embedding de cada track.")
+    p.add_argument("--aw-param", type=float, default=0.5, help="[deepocsort] peso de la fusión adaptativa apariencia/movimiento.")
 
     p.add_argument("--split", choices=list(DATA_ROOTS), default="test")
     p.add_argument("--data-root", default=None,
@@ -389,6 +659,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-sequences", type=int, default=None,
                     help="Corta a las primeras N secuencias del split -- útil para una corrida rápida de prueba.")
     p.add_argument("--outdir", default="reid_gap_report")
+    p.add_argument("--save-video-dir", default=None,
+                    help="Si se pasa, guarda un .mp4 anotado por secuencia (cajas GT en rojo + "
+                         "cajas/id del tracker en verde) en este directorio -- para inspección "
+                         "visual de detección+tracking, no afecta el reporte/métricas.")
+    p.add_argument("--video-fps", type=float, default=10.0)
     return p.parse_args()
 
 
@@ -398,7 +673,14 @@ def run_reid_gap_report(
     split: str, data_root: Optional[str],
     gt_conf_thresh: float, gt_class_id: int, gt_visibility_thresh: float,
     min_gap_frames: int, iou_match_thresh: float, max_sequences: Optional[int],
-    outdir: str, force: bool = False,
+    outdir: str, force: bool = False, save_video_dir: Optional[str] = None, video_fps: float = 10.0,
+    sequence_dirs: Optional[List[str]] = None,
+    track_thresh: float = 0.45, match_thresh: float = 0.8, track_buffer: int = 25,
+    new_track_thresh: float = 0.6, proximity_thresh: float = 0.5, appearance_thresh: float = 0.25,
+    cmc_method: str = "ecc",
+    min_hits: int = 3, iou_threshold: float = 0.3, asso_func: str = "iou",
+    delta_t: int = 3, inertia: float = 0.2,
+    w_association_emb: float = 0.5, alpha_fixed_emb: float = 0.95, aw_param: float = 0.5,
 ) -> str:
     """Cuerpo real de la corrida completa -- separado de main()/parse_args()
     para poder llamarse EN PROCESO desde train_track_query_reid.py (ver
@@ -409,15 +691,25 @@ def run_reid_gap_report(
     ya existe, no vuelve a correr detector+tracker sobre todo el split (caro)
     -- pensado para el caso de uso real de train_track_query_reid.py, donde
     esto se ejecuta ANTES de cada corrida de entrenamiento y no tiene sentido
-    repetirlo si el split/detector/tracker no cambiaron."""
+    repetirlo si el split/detector/tracker no cambiaron.
+
+    `sequence_dirs`, si se pasa, se usa DIRECTO en vez de resolver por
+    split/data_root -- lo usa el modo --kfold-cv de analyze_dinov2_nn_baseline.py
+    para generar el report una sola vez sobre las 72 secuencias del pool de
+    folds (ver kfold_utils.list_all_sequences), en vez de sobre un split fijo."""
     report_path = os.path.join(outdir, "reid_gap_report.json")
     if os.path.exists(report_path) and not force:
         print(f"[INFO] {report_path} ya existe, se omite la corrida (force=True para reprocesar)")
+        if save_video_dir:
+            print(f"[INFO] --save-video-dir pedido pero se saltó la corrida -- pasá force=True para generar los videos")
         return report_path
 
-    data_root, seq_dirs = resolve_sequence_dirs(data_root, split)
-    if seq_dirs is None:
-        seq_dirs = discover_sequences(data_root)
+    if sequence_dirs is not None:
+        seq_dirs = sequence_dirs
+    else:
+        data_root, seq_dirs = resolve_sequence_dirs(data_root, split)
+        if seq_dirs is None:
+            seq_dirs = discover_sequences(data_root)
     if max_sequences is not None:
         seq_dirs = seq_dirs[:max_sequences]
     print(f"[INFO] {len(seq_dirs)} secuencias a procesar (root={data_root})")
@@ -425,6 +717,12 @@ def run_reid_gap_report(
     detector_fn = build_detector(detector, onnx_path, provider)
     tracker_factory = build_tracker_factory(
         tracker, device, with_native_reid=(not no_native_reid), reid_weights=reid_weights,
+        track_thresh=track_thresh, match_thresh=match_thresh, track_buffer=track_buffer,
+        new_track_thresh=new_track_thresh, proximity_thresh=proximity_thresh,
+        appearance_thresh=appearance_thresh, cmc_method=cmc_method,
+        min_hits=min_hits, iou_threshold=iou_threshold, asso_func=asso_func,
+        delta_t=delta_t, inertia=inertia,
+        w_association_emb=w_association_emb, alpha_fixed_emb=alpha_fixed_emb, aw_param=aw_param,
     )
 
     os.makedirs(outdir, exist_ok=True)
@@ -432,16 +730,35 @@ def run_reid_gap_report(
     os.makedirs(crops_dir, exist_ok=True)
 
     all_results = []
+    required_reid_by_sequence = []
+    all_required_reid_events = []
     for seq_dir in seq_dirs:
-        print(f"[INFO] Procesando secuencia {os.path.basename(seq_dir.rstrip('/'))}")
-        all_results.extend(run_sequence(
+        seq_name = os.path.basename(seq_dir.rstrip("/"))
+        print(f"[INFO] Procesando secuencia {seq_name}")
+        seq_results, n_required_reid, required_reid_details, required_reid_events = run_sequence(
             seq_dir, detector_fn, tracker_factory, det_thresh, iou_match_thresh,
             min_gap_frames, gt_conf_thresh, gt_class_id, gt_visibility_thresh,
-            crops_dir,
-        ))
+            crops_dir, save_video_dir=save_video_dir, video_fps=video_fps,
+        )
+        all_results.extend(seq_results)
+        required_reid_by_sequence.append({
+            "sequence": seq_name, "n_required_reid": n_required_reid, "tracks": required_reid_details,
+        })
+        all_required_reid_events.extend(required_reid_events)
 
     with open(report_path, "w") as f:
         json.dump(all_results, f, indent=2)
+
+    required_reid_path = os.path.join(outdir, "required_reidentifications.json")
+    with open(required_reid_path, "w") as f:
+        json.dump(required_reid_by_sequence, f, indent=2)
+    total_required_reid = sum(s["n_required_reid"] for s in required_reid_by_sequence)
+
+    # Formato PLANO (mismo shape que new_id_born/id_swap en reid_gap_report.json)
+    # -- consumible directo por TrackerFailureReIDDataset (ver tracker_failure_dataset.py)
+    required_reid_events_path = os.path.join(outdir, "required_reid_events.json")
+    with open(required_reid_events_path, "w") as f:
+        json.dump(all_required_reid_events, f, indent=2)
 
     counts = Counter(r["outcome"] for r in all_results)
     total = len(all_results)
@@ -457,6 +774,13 @@ def run_reid_gap_report(
         fail_rate = counts.get("new_id_born", 0) / evaluable
         print(f"\n[FALLO DE REID] {counts.get('new_id_born', 0)}/{evaluable} brechas evaluables "
               f"({100 * fail_rate:.1f}%): el tracker nació un id nuevo en vez de reidentificar.")
+    print(
+        f"\n[REQUIRED-REID TOTAL] {total_required_reid} reidentificaciones necesarias en todo el split "
+        f"(cambios de id en tracks de GT, CON o SIN brecha temporal detectada -- métrica más amplia que "
+        f"new_id_born/id_swap, que solo miran brechas reales). Desglose legible por video en "
+        f"{required_reid_path}, formato plano (para armar dataset con tracker_failure_dataset.py) en "
+        f"{required_reid_events_path}"
+    )
     print(f"[OK] Reporte guardado en {report_path}, crops de fallos en {crops_dir}")
     return report_path
 
@@ -471,6 +795,13 @@ def main():
         gt_visibility_thresh=args.gt_visibility_thresh, min_gap_frames=args.min_gap_frames,
         iou_match_thresh=args.iou_match_thresh, max_sequences=args.max_sequences, outdir=args.outdir,
         force=True,  # la CLI standalone siempre corre -- el cache es para el caller de train_track_query_reid.py
+        save_video_dir=args.save_video_dir, video_fps=args.video_fps,
+        track_thresh=args.track_thresh, match_thresh=args.match_thresh, track_buffer=args.track_buffer,
+        new_track_thresh=args.new_track_thresh, proximity_thresh=args.proximity_thresh,
+        appearance_thresh=args.appearance_thresh, cmc_method=args.cmc_method,
+        min_hits=args.min_hits, iou_threshold=args.iou_threshold, asso_func=args.asso_func,
+        delta_t=args.delta_t, inertia=args.inertia,
+        w_association_emb=args.w_association_emb, alpha_fixed_emb=args.alpha_fixed_emb, aw_param=args.aw_param,
     )
 
 

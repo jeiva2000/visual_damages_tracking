@@ -244,6 +244,28 @@ class DamageTrackIndex:
         random.shuffle(same_video)
         return same_video[:k]
 
+    def sample_hard_distractors_same_panel(self, exclude_identity: IdentityTrack, k: int) -> List[IdentityTrack]:
+        """Como sample_hard_distractors, pero SÍ prioriza de verdad los
+        distractores que comparten part_label con exclude_identity (ese
+        método lo documenta pero no lo implementa -- ver ablación
+        same_panel, M10/P4 paperreview.ai). El hard negative real para
+        este dominio es mismo vehículo Y mismo panel (dos daños distintos
+        en la misma pieza), no solo mismo video. Método nuevo, no
+        reemplaza a sample_hard_distractors, para no alterar ningún
+        resultado ya calculado con el muestreo puramente aleatorio por
+        video -- lo usa únicamente TrackerFailureReIDDataset con
+        hard_distractor_mode="same_panel"."""
+        ref_parts = {obs.part_label for obs in exclude_identity.observations}
+        same_video = [
+            t for t in self.by_video.get(exclude_identity.video_id, [])
+            if t.identity_id != exclude_identity.identity_id
+        ]
+        same_panel = [t for t in same_video if {obs.part_label for obs in t.observations} & ref_parts]
+        other_panel = [t for t in same_video if t not in same_panel]
+        random.shuffle(same_panel)
+        random.shuffle(other_panel)
+        return (same_panel + other_panel)[:k]
+
     def sample_easy_distractors(self, exclude_identity: IdentityTrack, k: int) -> List[IdentityTrack]:
         """Distractores de otros videos: negativos triviales, para no
         sobre-optimizar solo el caso difícil."""

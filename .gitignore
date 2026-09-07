@@ -11,3 +11,12 @@ reid_batch_dump/
 *.png
 log_*.txt
 sweep.log
+
+# assets/datos generados para el paper (imágenes, resúmenes) -- no versionar
+paper/
+paper_overleaf/
+
+# backups locales puntuales y checkpoints binarios -- no versionar
+*.bak_*
+*.onnx
+*.pth
