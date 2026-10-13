@@ -118,8 +118,29 @@ def _build_loader(index, episodes, max_bank_size, num_track_history, query_wide_
     return DataLoader(dataset, batch_size=batch_size, collate_fn=collate_episodes_with_video_ids)
 
 
-def _embed_batch(model, batch, device, head=None):
-    """(track_summary (B,S,D), query_embeds (B,D), bank_mask (B,S) numpy, S).
+def _fuse_query_views(query_views_embeds, query_fusion):
+    """(B,2,D) -> (B,D) [o (B,2D) solo para 'concat'] combinando las 2 vistas
+    de la query (índice 0=ajustada/near, índice 1=amplia/wide, ver
+    _load_query_views en reid_dataloader.py) según --query-fusion. Ver el
+    docstring de ese flag (main(), analyze_dinov2_nn_baseline.py) -- 'mean'
+    es el comportamiento de siempre, los demás son ablaciones M10/P3."""
+    if query_fusion == "mean":
+        return query_views_embeds.mean(axis=1)
+    if query_fusion == "near":
+        return query_views_embeds[:, 0, :]
+    if query_fusion == "wide":
+        return query_views_embeds[:, 1, :]
+    if query_fusion == "max":
+        return query_views_embeds.max(axis=1)
+    if query_fusion == "concat":
+        B = query_views_embeds.shape[0]
+        return query_views_embeds.reshape(B, -1)
+    raise ValueError(f"query_fusion desconocido: {query_fusion}")
+
+
+def _embed_batch(model, batch, device, head=None, query_fusion="mean"):
+    """(track_summary (B,S,D) [o (B,S,2D) si query_fusion='concat'],
+    query_embeds (B,D) [o (B,2D)], bank_mask (B,S) numpy, S).
 
     Con --embedding-cache activo, `bank_images`/`query_views` ya son
     embeddings (B,S,K,D)/(B,2,D) en vez de píxeles (B,S,K,C,H,W)/(B,2,C,H,W)
@@ -134,15 +155,22 @@ def _embed_batch(model, batch, device, head=None):
     if bank_images.dim() == 6:
         B, S, K, C, H, W = bank_images.shape
         bank_embeds = _encode_cls(model, bank_images.view(B * S * K, C, H, W), device, head=head).reshape(B, S, K, -1)
-        query_embeds = _encode_cls(model, query_views.view(B * 2, C, H, W), device, head=head).reshape(B, 2, -1).mean(axis=1)
+        query_views_embeds = _encode_cls(model, query_views.view(B * 2, C, H, W), device, head=head).reshape(B, 2, -1)
     else:
         B, S, K, D = bank_images.shape
         bank_embeds = _apply_head_precomputed(bank_images.view(B * S * K, D), device, head=head).reshape(B, S, K, -1)
-        query_embeds = _apply_head_precomputed(query_views.view(B * 2, D), device, head=head).reshape(B, 2, -1).mean(axis=1)
+        query_views_embeds = _apply_head_precomputed(query_views.view(B * 2, D), device, head=head).reshape(B, 2, -1)
+    query_embeds = _fuse_query_views(query_views_embeds, query_fusion)
 
     masked = bank_embeds * bank_obs_mask[..., None]
     counts = bank_obs_mask.sum(axis=2, keepdims=True)
     track_summary = masked.sum(axis=2) / np.clip(counts, 1, None)
+    if query_fusion == "concat":
+        # el banco no tiene una vista ajustada/amplia separada por slot (ya
+        # es un promedio pooled de su propio historial, ver pool_history) --
+        # se duplica consigo mismo para que la dimensión siga siendo
+        # comparable contra la query 2xD via cosine_sim.
+        track_summary = np.concatenate([track_summary, track_summary], axis=-1)
     return track_summary, query_embeds, bank_mask, S
 
 
@@ -194,7 +222,7 @@ def _calibrate_threshold(model, train_index, args, head=None, attn_scorer=None):
     )
     best_sims, is_match = [], []
     for batch in loader:
-        track_summary, query_embeds, bank_mask, S = _embed_batch(model, batch, args.device, head=head)
+        track_summary, query_embeds, bank_mask, S = _embed_batch(model, batch, args.device, head=head, query_fusion=args.query_fusion)
         sims_batch = (
             _score_with_attn_scorer(attn_scorer, query_embeds, track_summary, bank_mask, args.device)
             if attn_scorer is not None else None
@@ -334,7 +362,7 @@ def _run_reid_gap_baseline(args):
 def _evaluate_loader(
     model, loader, device, include_no_match, threshold, heatmap_temperature,
     save_visuals=False, fails_dir=None, correct_dir=None, max_fails=float("inf"), max_correct=float("inf"),
-    head=None, attn_scorer=None,
+    head=None, attn_scorer=None, query_fusion="mean",
 ):
     """Corre el 1-NN (crudo, proyectado si se pasa `head`, o vía
     BilinearAttentionScorer si se pasa `attn_scorer` -- mutuamente
@@ -359,7 +387,7 @@ def _evaluate_loader(
     n_correct_saved = 0
 
     for batch in loader:
-        track_summary, query_embeds, bank_mask, S = _embed_batch(model, batch, device, head=head)
+        track_summary, query_embeds, bank_mask, S = _embed_batch(model, batch, device, head=head, query_fusion=query_fusion)
         sims_batch = (
             _score_with_attn_scorer(attn_scorer, query_embeds, track_summary, bank_mask, device)
             if attn_scorer is not None else None
@@ -504,6 +532,7 @@ def _evaluate_synthetic_split(model, index, args, threshold, head, output_dir, l
         fails_dir=os.path.join(output_dir, f"fails_{label}"),
         correct_dir=os.path.join(output_dir, f"correct_{label}"),
         max_fails=max_fails, max_correct=max_correct, head=head, attn_scorer=attn_scorer,
+        query_fusion=args.query_fusion,
     )
     _print_metrics(f"BASELINE split={label}", metrics, threshold, True, fuente="episodios sintéticos")
     return metrics
@@ -543,6 +572,7 @@ def _evaluate_tracker_on_cases(
         fails_dir=os.path.join(output_dir, f"fails_{label}"),
         correct_dir=os.path.join(output_dir, f"correct_{label}"),
         max_fails=max_fails, max_correct=max_correct, head=head, attn_scorer=attn_scorer,
+        query_fusion=args.query_fusion,
     )
     _print_metrics(
         f"BASELINE tracker={tracker} label={label}", metrics, threshold, True,
@@ -876,6 +906,21 @@ def main():
     )
     parser.add_argument("--num-track-history", type=int, default=4)
     parser.add_argument("--query-wide-factor", type=float, default=9.0)
+    parser.add_argument(
+        "--query-fusion", default="mean", choices=["mean", "near", "wide", "max", "concat"],
+        help="[Reimplementado 2026-09-07, ver memoria feedback_isolate_experimental_pipeline_changes "
+             "-- el --query-fusion original (ablacion M10/revision propia, escala 6/1.6/1.0) se perdio "
+             "en algun momento sin dejar rastro en el codigo (nunca estuvo bajo git); esta es una "
+             "reconstruccion, no una recuperacion bit-a-bit del original] Como combinar las DOS vistas "
+             "de la query (ajustada=near, factor 1.0; amplia=wide, factor intermedio del cache o "
+             "query_wide_factor sin cache -- ver _load_query_views en reid_dataloader.py) en un solo "
+             "vector antes de compararlo contra el banco. mean (default, comportamiento de siempre) = "
+             "promedio de las 2 vistas. near/wide = usa SOLO esa vista, descarta la otra. max = maximo "
+             "elemento a elemento entre las 2 vistas. concat = concatena las 2 vistas (2xD) en vez de "
+             "promediarlas -- en este modo el banco tambien se duplica consigo mismo (concat(v,v)) para "
+             "mantener las dimensiones comparables en la similitud coseno, ya que el banco no tiene una "
+             "nocion separada de vista-ajustada/vista-amplia como la query.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--batch-size", type=int, default=4)
@@ -1144,6 +1189,7 @@ def main():
         heatmap_temperature=args.heatmap_temperature, save_visuals=args.save_visuals,
         fails_dir=args.fails_dir, correct_dir=args.correct_dir,
         max_fails=max_fails, max_correct=max_correct, head=head, attn_scorer=attn_scorer,
+        query_fusion=args.query_fusion,
     )
     _print_metrics(f"BASELINE 1-NN crudo -- sin cabeza entrenada -- split={args.split}", metrics, threshold, args.include_no_match, fuente=fuente)
     print(

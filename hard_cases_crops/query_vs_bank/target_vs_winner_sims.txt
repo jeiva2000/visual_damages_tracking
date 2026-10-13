@@ -1,0 +1,62 @@
+0
+same
+
+botsort video_75wAEktI gt2 183->275 outcome=id_swap gap=92 target_bank_id=2
+  (sin intento de reid solapado con el GT objetivo)
+
+botsort video_0vbcxRjn gt1 170->419 outcome=id_swap gap=249 target_bank_id=4
+  f418 newborn_raw=141 -> MATCH 119 | target sim=0.9081000089645386 rank=11/13 | best id119 sim=0.9438 | n_bank>=thr=2
+  f470 newborn_raw=147 -> MATCH 119 | target sim=0.9455999732017517 rank=5/10 | best id119 sim=0.9640 | n_bank>=thr=6
+
+botsort video_Ve7DX8i8 gt5 31->196 outcome=id_swap gap=165 target_bank_id=6
+  (sin intento de reid solapado con el GT objetivo)
+
+botsort video_0jGlrs0w gt2 289->332 outcome=id_swap gap=43 target_bank_id=60
+  (sin intento de reid solapado con el GT objetivo)
+
+botsort video_0jGlrs0w gt2 347->462 outcome=id_swap gap=115 target_bank_id=10000007
+  f412 newborn_raw=110 -> MATCH 88 | target sim=None rank=None/14 | best id88 sim=0.9730 | n_bank>=thr=10
+  f413 newborn_raw=111 -> MATCH 10000010 | target sim=None rank=None/13 | best id10000010 sim=0.9743 | n_bank>=thr=10
+  f450 newborn_raw=125 -> MATCH 10000010 | target sim=0.9513000249862671 rank=10/20 | best id10000010 sim=0.9754 | n_bank>=thr=13
+
+botsort video_rICjFXth gt1 169->216 outcome=id_swap gap=47 target_bank_id=10000002
+  f188 newborn_raw=45 -> MATCH 37 | target sim=0.96670001745224 rank=2/15 | best id37 sim=0.9772 | n_bank>=thr=4
+  f265 newborn_raw=71 -> nomatch | target sim=0.9315000176429749 rank=1/15 | best id10000002 sim=0.9315 | n_bank>=thr=0
+
+botsort video_kYUj2rFi gt2 234->376 outcome=reidentified gap=142 target_bank_id=1
+  f404 newborn_raw=115 -> nomatch | target sim=None rank=None/12 | best id10000009 sim=0.8889 | n_bank>=thr=0
+
+botsort video_Mpn2iv5E gt1 78->138 outcome=reidentified gap=60 target_bank_id=3
+  f135 newborn_raw=76 -> MATCH 3 | target sim=0.9467999935150146 rank=1/25 | best id3 sim=0.9468 | n_bank>=thr=3
+  f180 newborn_raw=110 -> MATCH 1 | target sim=0.901199996471405 rank=15/32 | best id1 sim=0.9621 | n_bank>=thr=1
+
+botsort video_Mpn2iv5E gt2 224->304 outcome=reidentified gap=80 target_bank_id=10000001
+  f271 newborn_raw=145 -> MATCH 10000003 | target sim=0.9318000078201294 rank=3/28 | best id10000003 sim=0.9601 | n_bank>=thr=1
+  f301 newborn_raw=152 -> MATCH 10000001 | target sim=0.9564999938011169 rank=1/25 | best id10000001 sim=0.9565 | n_bank>=thr=2
+
+bytetrack video_75wAEktI gt2 183->275 outcome=id_swap gap=92 target_bank_id=12
+  (sin intento de reid solapado con el GT objetivo)
+
+bytetrack video_0vbcxRjn gt1 170->419 outcome=id_swap gap=249 target_bank_id=4
+  f170 newborn_raw=35 -> MATCH 10000001 | target sim=None rank=None/4 | best id10000001 sim=0.9512 | n_bank>=thr=4
+  f282 newborn_raw=94 -> MATCH 91 | target sim=0.9251000285148621 rank=6/9 | best id91 sim=0.9610 | n_bank>=thr=3
+  f418 newborn_raw=160 -> MATCH 143 | target sim=0.9082000255584717 rank=8/11 | best id143 sim=0.9537 | n_bank>=thr=2
+
+bytetrack video_0XWkyECi gt4 292->474 outcome=id_swap gap=182 target_bank_id=30
+  (sin intento de reid solapado con el GT objetivo)
+
+bytetrack video_0jGlrs0w gt2 289->332 outcome=id_swap gap=43 target_bank_id=1
+  f373 newborn_raw=139 -> MATCH 2 | target sim=0.9369999766349792 rank=8/18 | best id2 sim=0.9535 | n_bank>=thr=6
+
+bytetrack video_1Vl7JUY8 gt1 19->63 outcome=id_swap gap=44 target_bank_id=1
+  f61 newborn_raw=38 -> nomatch | target sim=0.9258000254631042 rank=2/6 | best id21 sim=0.9364 | n_bank>=thr=0
+
+bytetrack video_rICjFXth gt1 169->216 outcome=id_swap gap=47 target_bank_id=42
+  f265 newborn_raw=80 -> MATCH 62 | target sim=0.9147999882698059 rank=10/16 | best id62 sim=0.9452 | n_bank>=thr=1
+
+bytetrack video_kYUj2rFi gt2 234->376 outcome=reidentified gap=142 target_bank_id=1
+  f371 newborn_raw=157 -> MATCH 1 | target sim=0.9466000199317932 rank=1/16 | best id1 sim=0.9466 | n_bank>=thr=1
+  f404 newborn_raw=169 -> nomatch | target sim=None rank=None/13 | best id10000010 sim=0.8834 | n_bank>=thr=0
+  f425 newborn_raw=175 -> MATCH 10000015 | target sim=0.9800000190734863 rank=3/14 | best id10000015 sim=0.9916 | n_bank>=thr=3
+
+[exited with code 0]

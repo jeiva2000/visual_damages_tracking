@@ -20,3 +20,6 @@ paper_overleaf/
 *.bak_*
 *.onnx
 *.pth
+
+# figuras del README
+!docs/*.png

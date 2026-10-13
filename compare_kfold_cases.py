@@ -60,6 +60,24 @@ CONFIGS = {
     "p4fpn_v6head_oc": {"dir": "p4fpn_roi_kfold_head_v6style_ocsort_deepocsort", "has_head": True, "embedding_cache": "p4fpn_roi_cache_kfold_pool.pt"},
     "osnet_roi_oc": {"dir": "osnet_puro_kfold_baseline_ocsort_deepocsort", "has_head": False, "embedding_cache": "osnet_cache_kfold_pool.pt"},
     "clipvehicleid_roi_oc": {"dir": "clipvehicleid_puro_kfold_baseline_ocsort_deepocsort", "has_head": False, "embedding_cache": "clipvehicleid_cache_kfold_pool.pt"},
+    # --- Resto de cabezas entrenadas sobre C4 (H2 intermedio, H3 v7, H4
+    # pure-triplet; H1 = p4_v6head / c4_v6head_oc arriba) -- mismos dirs cuyos
+    # kfold_results.json dan los valores de tab:kfold_identity_acc. Para
+    # McNemar de C4 puro vs cada cabeza sobre los mismos eventos. ---
+    "p4_intermedio_head": {"dir": "p4_roi_kfold_head_intermedio", "has_head": True, "embedding_cache": "p4_roi_cache_kfold_pool.pt"},
+    "p4_v7head": {"dir": "p4_roi_kfold_head_v7", "has_head": True, "embedding_cache": "p4_roi_cache_kfold_pool.pt"},
+    "p4_puretriplet_head": {"dir": "p4_roi_kfold_head_pure_triplet", "has_head": True, "embedding_cache": "p4_roi_cache_kfold_pool.pt"},
+    "c4_intermedio_head_oc": {"dir": "c4_roi_kfold_head_intermedio_ocsort_deepocsort", "has_head": True, "embedding_cache": "p4_roi_cache_kfold_pool.pt"},
+    "c4_v7head_oc": {"dir": "c4_roi_kfold_head_v7_ocsort_deepocsort", "has_head": True, "embedding_cache": "p4_roi_cache_kfold_pool.pt"},
+    "c4_puretriplet_head_oc": {"dir": "c4_roi_kfold_head_pure_triplet_ocsort_deepocsort", "has_head": True, "embedding_cache": "p4_roi_cache_kfold_pool.pt"},
+    # --- EXPERIMENTO AISLADO NOVIDEO (detector rtdetrv2_v3_qcs_cardd_NOVIDEO.pth,
+    # entrenado solo con QCS v3 + CarDD, sin frames de video) -- ver
+    # exp_novideo_detector/run_novideo_kfold.sh. Mismos eventos y folds que
+    # p4_roi / c4_roi_oc / p4fpn_roi / p4fpn_roi_oc; solo cambian features y umbrales. ---
+    "c4_novideo": {"dir": "exp_novideo_detector/c4_kfold_baseline_NOVIDEO", "has_head": False, "embedding_cache": "exp_novideo_detector/c4_roi_cache_kfold_pool_NOVIDEO.pt"},
+    "c4_novideo_oc": {"dir": "exp_novideo_detector/c4_kfold_baseline_oc_NOVIDEO", "has_head": False, "embedding_cache": "exp_novideo_detector/c4_roi_cache_kfold_pool_NOVIDEO.pt"},
+    "p4fpn_novideo": {"dir": "exp_novideo_detector/p4fpn_kfold_baseline_NOVIDEO", "has_head": False, "embedding_cache": "exp_novideo_detector/p4fpn_roi_cache_kfold_pool_NOVIDEO.pt"},
+    "p4fpn_novideo_oc": {"dir": "exp_novideo_detector/p4fpn_kfold_baseline_oc_NOVIDEO", "has_head": False, "embedding_cache": "exp_novideo_detector/p4fpn_roi_cache_kfold_pool_NOVIDEO.pt"},
 }
 
 
