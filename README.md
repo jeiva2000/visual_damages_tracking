@@ -113,6 +113,11 @@ ID in a frame and give the colliding track a new ID; an earlier version dropped
 one of them, which understated identity switches. All numbers in the paper use
 the corrected version.
 
+## License
+
+- **Code:** [MIT](LICENSE).
+- **Dataset:** [CC BY-NC 4.0](https://creativecommons.org/licenses/by-nc/4.0/). It can be used for academic research free of charge, citing the paper below. If you seek to use the data for commercial purposes, please contact us.
+
 ## Citation
 
-Citation details will be added upon publication.
+If you use the code or the dataset, please cite the paper. Citation details will be added upon publication.
