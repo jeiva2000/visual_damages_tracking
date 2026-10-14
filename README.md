@@ -80,10 +80,15 @@ stored in this repository because of its size. It is available on request:
 
 ## Reproducing the live evaluation
 
-Requirements: Python with PyTorch, `boxmot==18.0.0`, `lap`, `onnxruntime`,
-`transformers`, `opencv-python`, an RT-DETR checkpoint and config (RT-DETR
-repository), and [TrackEval](https://github.com/JonathonLuiten/TrackEval)
-(set `TRACKEVAL_DIR` to its folder).
+Requirements: Python 3.10 and the packages in `requirements.txt` (the versions of
+the environment used for the paper, including `boxmot==21.0.0`), plus an RT-DETR
+checkpoint and config (from the RT-DETR repository, which also provides the `src`
+package) and [TrackEval](https://github.com/JonathonLuiten/TrackEval) (set
+`TRACKEVAL_DIR` to its folder).
+
+```bash
+pip install -r requirements.txt   # install PyTorch first for your CUDA version, see the file header
+```
 
 ```bash
 export DETECTOR_PTH=<detector.pth> DETECTOR_CFG=<rtdetrv2_r101vd_6x_coco.yml>
