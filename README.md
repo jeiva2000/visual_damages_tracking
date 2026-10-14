@@ -75,6 +75,7 @@ stored in this repository because of its size. It is available on request:
 | `linear_reid_head.py`, `train_linear_reid_head.py`, `set_reid_model.py`, `train_track_query_reid.py` | Optional trained heads (H1-H4), reported as a separate ablation |
 | `paper_fig_*.py` | Scripts that generate paper figures |
 | `exp_*` | Detector-provenance experiments (no-video detectors, test_models sweep) and the exclusion of the 10 seen sequences |
+| `legacy/` | Earlier diagnostics and example-search scripts, not needed to reproduce the paper |
 | `docs/EXPERIMENT_LOG.md` | Chronological experiment log (run-by-run, in Spanish) |
 
 ## Reproducing the live evaluation
