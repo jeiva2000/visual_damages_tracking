@@ -30,6 +30,8 @@ DEPENDENCIAS
 ------------
 pip install torch torchvision pillow
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'reid_lib'))  # library modules
 
 import argparse
 import json

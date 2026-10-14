@@ -77,6 +77,8 @@ API "clásica" -- BotSort(reid_weights=..., device=..., half=..., with_reid=...)
 ByteTrack(), tracker.update(dets, img) -> np.ndarray (x1,y1,x2,y2,id,conf,cls,det_ind),
 tracker.lost_stracks). Con boxmot>=19 este script rompe.
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'reid_lib'))  # library modules
 
 import argparse
 import json

@@ -61,6 +61,8 @@ Uso (modos sueltos):
     python3 analyze_dinov2_nn_baseline.py --split test --same-video-only \\
         --required-reid-events reid_gap_report_bytetrack_test/required_reid_events.json
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'reid_lib'))  # library modules
 import argparse
 import json
 import math

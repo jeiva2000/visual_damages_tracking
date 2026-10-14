@@ -70,8 +70,10 @@ stored in this repository because of its size. It is available on request:
 |---|---|
 | `live_tracking/` | Live pipeline: `run_eval_nodedup.py` (tracking + TrackEval evaluation), `main_track_nodedup.py` (trackers + module hook), `reid_gallery.py` (gallery: `bury`, `match_newborns`, ageing/pruning), `custom_reid.py` (C4 / P4-FPN / DINOv2 / OSNet / CLIP encoders), `trackeval_api.py`, `run_live_experiments.sh` (the paper's configurations) |
 | `infer_track_reid_gaps.py`, `analyze_reid_gap_failures.py` | Gap-isolated metric: detection and classification of occlusion gaps |
-| `kfold_utils.py`, `analyze_dinov2_nn_baseline*.py`, `compare_kfold_cases.py`, `pool_existing_kfold_results.py` | Offline k-fold identity-accuracy comparison and McNemar tests |
-| `linear_reid_head.py`, `train_linear_reid_head.py`, `set_reid_model.py`, `train_track_query_reid.py` | Optional trained heads (H1-H4), reported as a separate ablation |
+| `analyze_dinov2_nn_baseline.py`, `compare_kfold_cases.py` | Offline k-fold identity-accuracy comparison (all frozen signals) and McNemar tests |
+| `train_linear_reid_head.py`, `train_track_query_reid.py`, `precompute_p4_roi_cache.py` | Optional trained heads (H1-H4, reported as a separate ablation) and the feature-cache precomputation |
+| `reid_lib/` | Library modules used by the scripts above (dataset and episode construction, samplers, encoders, heads, k-fold utilities) |
+| `scripts/kfold/` | Variants of the k-fold comparison (pooled folds, inverted calibration) |
 | `scripts/embedding_analysis/` | Embedding analysis: compression, PCA, dendrograms, isotropy, C4 confusion cases |
 | `scripts/paper_figures/` | Scripts that generate the paper figures |
 | `scripts/paper7_comparison/` | Comparison with prior work [7] (required events, backbone encoder, rendering) |

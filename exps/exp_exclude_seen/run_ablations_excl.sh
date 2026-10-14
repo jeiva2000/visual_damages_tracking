@@ -59,7 +59,7 @@ run() {  # run <outname> <script> <trackers> <device> <args...>
 C4="--encoder p4 --embedding-cache p4_roi_cache_kfold_pool.pt"
 PF="--encoder p4fpn --embedding-cache p4fpn_roi_cache_kfold_pool.pt"
 MAIN=analyze_dinov2_nn_baseline.py
-INV=analyze_dinov2_nn_baseline_inverted_calib.py
+INV=scripts/kfold/analyze_dinov2_nn_baseline_inverted_calib.py
 
 cpu_queue() {
   for bin in lt3 3-8 9-32 gt32; do

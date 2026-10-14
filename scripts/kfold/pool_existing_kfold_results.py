@@ -12,6 +12,9 @@ Uso:
     python3 pool_existing_kfold_results.py p4fpn_roi_kfold_baseline/kfold_results.json P4-FPN
     python3 pool_existing_kfold_results.py kfold_dinov2_raw/kfold_results.json DINOv2
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), 'reid_lib'))  # library modules
 import json
 import math
 import sys

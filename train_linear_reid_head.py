@@ -70,6 +70,8 @@ Uso:
         --linear-head-checkpoint linear_reid_head_run/best_head.pt \\
         --reid-gap-onnx checkpoints/rtdetrv2_v3_qcs_videos.onnx
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'reid_lib'))  # library modules
 import argparse
 import os
 import random

@@ -5,32 +5,29 @@ para no tocar el script compartido que usan embedding_analysis_dinov2_vs_p4.py,
 plot_embedding_compression.py, plot_pca_crops_single_video.py,
 plot_dendrogram_crops_single_video.py e investigate_c4_video6_confusion.py.
 
-ÚNICO CAMBIO respecto al original: en run_kfold_cv, INVIERTE qué porción de
-cada fold calibra el umbral y cuál se evalúa. El protocolo original calibra
-sobre train (~4/6 del pool, ~42-43 secuencias) y evalúa identity_acc/
-match_acc sobre test (~1/6, ~10-11 secuencias) -- eso acota la muestra de
-evaluación al tamaño del test físico. Acá se calibra sobre el fold "test"
-chico (~10-11 secuencias, alcanza de sobra para los --num-calibration-episodes
-por default, no depende del tamaño físico del índice) y se evalúa
-identity_acc/match_acc sobre el resto del pool (~5/6, ~53-54 secuencias) --
-maximiza la muestra de evaluación, que es lo que este experimento busca medir
-(poder de re-identificación sobre la mayor parte posible del dataset), no un
-split train/test clásico.
+ÚNICO CAMBIO respecto al original: el protocolo de folds NO cambia (sigue
+calibrando en train ~42-43 secuencias y evaluando en test ~10-11, rotando
+los 6 folds, exactamente como analyze_dinov2_nn_baseline.py) -- lo que
+cambia es la AGREGACIÓN final. En vez de calcular identity_acc/match_acc
+por fold y promediar 6 números chicos y ruidosos (mean +/- std, el
+comportamiento original), acá se acumulan los conteos crudos (aciertos y
+total) de los 6 folds -- que nunca se solapan entre sí, porque los 6 test
+son disjuntos y cubren el pool completo exactamente una vez -- y se calcula
+UNA sola accuracy agregada sobre el total combinado, con su intervalo de
+Wilson (misma técnica que ya usa el paper para proporciones con
+denominadores chicos, ver Sección de significancia estadística).
 
-OJO -- interpretación distinta del "mean +/- std entre folds": con los roles
-invertidos, los conjuntos de evaluación de los 6 folds se SOLAPAN masivamente
-entre sí (cada uno es ~5/6 del pool, comparten la mayoría de sus secuencias),
-a diferencia del protocolo original donde los 6 test son disjuntos y cubren
-el pool exacto una vez. El std entre folds acá mide sensibilidad del umbral a
-QUÉ porción chica se usó para calibrar (evaluado cada vez sobre casi todo el
-pool), NO el mismo tipo de intervalo de confianza entre 6 muestras
-independientes del protocolo original -- no reportar/comparar como si fuera
-lo mismo.
-
-Solo tiene sentido con --kfold-skip-training (encoders crudos, sin cabeza
-entrenada) -- con cabeza entrenada, entrenar con ~10-11 secuencias como
-"train" no sería comparable a lo ya publicado (que entrena con ~42-43).
-run_kfold_cv más abajo aborta si se corre sin --kfold-skip-training.
+Esto es "cross-validated prediction pooling" (como cross_val_predict de
+scikit-learn): cada caso del pool se evalúa exactamente una vez, con un
+umbral que nunca lo vio durante la calibración -- cero fuga de datos, cero
+solapamiento, y una muestra del tamaño del dataset completo en vez de la
+de un solo fold chico. Ver conversación: resuelve el problema que tenía la
+otra copia experimental (analyze_dinov2_nn_baseline_inverted_calib.py, que
+invertía los roles calibración/evaluación) -- ahí los 6 conjuntos de
+evaluación quedaban ~5/6 del pool cada uno y se solapaban masivamente entre
+sí, así que el "mean +/- std entre folds" ya no medía 6 muestras
+independientes. Acá no hay ese problema porque no se toca qué evalúa cada
+fold, solo cómo se combinan los resultados al final.
 
 --- Docstring original de analyze_dinov2_nn_baseline.py, sin modificar ---
 
@@ -96,6 +93,9 @@ Uso (modos sueltos):
     python3 analyze_dinov2_nn_baseline.py --split test --same-video-only \\
         --required-reid-events reid_gap_report_bytetrack_test/required_reid_events.json
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), 'reid_lib'))  # library modules
 import argparse
 import json
 import math
@@ -502,8 +502,10 @@ def _evaluate_loader(
         "n_total": n_total,
         "identity_acc": identity_acc,
         "n_identity_total": n_identity_total,
+        "n_identity_correct": n_identity_correct,  # crudo -- para poder POOLEAR entre folds (ver docstring del módulo)
         "n_no_match_total": n_no_match_total,
         "match_acc": match_acc,
+        "n_match_correct": n_match_correct if include_no_match else None,  # crudo -- ídem
         "wrong_identity_intra": wrong_identity_intra,
         "wrong_identity_inter": wrong_identity_inter,
         "false_negative": false_negative,
@@ -751,7 +753,7 @@ def _print_kfold_summary(fold_results, args):
         i_str = f"{i_mean:.4f} +/- {i_std:.4f}" if not math.isnan(i_mean) else "--"
         print(f"{label:<20s} {m_str:>20s} {i_str:>20s}")
 
-    _row("synthetic_eval", [r["synthetic"] for r in fold_results])
+    _row("synthetic_test", [r["synthetic"] for r in fold_results])
     for tracker in args.trackers:
         _row(tracker, [r["trackers"].get(tracker) for r in fold_results])
 
@@ -761,6 +763,63 @@ def _print_kfold_summary(fold_results, args):
         "media +/- desvío estándar de arriba es la métrica a reportar en el paper, no el "
         "resultado de ningún fold individual (ver kfold_results.json para el detalle completo)."
     )
+
+
+def _wilson_interval(x, n, z=1.96):
+    """Intervalo de Wilson para una proporción x/n -- misma fórmula que ya
+    usa el paper para las proporciones con denominadores chicos (ver
+    Sección de significancia estadística). z=1.96 -> 95%."""
+    if not n:
+        return float("nan"), float("nan"), float("nan")
+    p = x / n
+    denom = 1.0 + z * z / n
+    center = p + z * z / (2 * n)
+    half = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)
+    return p, (center - half) / denom, (center + half) / denom
+
+
+def _print_pooled_summary(fold_results, args):
+    """AGREGACIÓN ALTERNATIVA a _print_kfold_summary -- en vez de promediar
+    la accuracy de cada fold (6 números chicos y ruidosos), acumula los
+    conteos crudos (aciertos y total) de los 6 folds -- que nunca se
+    solapan entre sí, ver docstring del módulo -- y calcula UNA accuracy
+    agregada sobre el total combinado, con su intervalo de Wilson. Cada
+    caso del pool completo se evaluó exactamente una vez, con un umbral
+    calibrado en datos que nunca lo incluyeron (cross-validated prediction
+    pooling, como cross_val_predict de scikit-learn)."""
+    print(f"\n[RESUMEN K-FOLD POOLEADO] {len(fold_results)} folds combinados (num_folds={args.num_folds}, seed={args.kfold_seed})")
+    print(f"{'fuente':<20s} {'match_acc (n)':>28s} {'identity_acc (n)':>32s}")
+
+    def _pooled_row(label, metrics_list):
+        clean = [m for m in metrics_list if m]
+        n_id_correct = sum(m["n_identity_correct"] for m in clean)
+        n_id_total = sum(m["n_identity_total"] for m in clean)
+        id_p, id_lo, id_hi = _wilson_interval(n_id_correct, n_id_total)
+
+        match_terms = [m for m in clean if m.get("n_match_correct") is not None]
+        if match_terms:
+            n_m_correct = sum(m["n_match_correct"] for m in match_terms)
+            n_m_total = sum(m["n_total"] for m in match_terms)
+            m_p, m_lo, m_hi = _wilson_interval(n_m_correct, n_m_total)
+            m_str = f"{m_p:.4f} [{m_lo:.4f},{m_hi:.4f}] (n={n_m_total})"
+        else:
+            m_str = "--"
+        id_str = f"{id_p:.4f} [{id_lo:.4f},{id_hi:.4f}] (n={n_id_total})"
+        print(f"{label:<20s} {m_str:>28s} {id_str:>32s}")
+        return {"n_identity_correct": n_id_correct, "n_identity_total": n_id_total, "identity_acc": id_p}
+
+    pooled = {"synthetic_test": _pooled_row("synthetic_test", [r["synthetic"] for r in fold_results])}
+    for tracker in args.trackers:
+        pooled[tracker] = _pooled_row(tracker, [r["trackers"].get(tracker) for r in fold_results])
+
+    print(
+        "\n[INFO] A diferencia del resumen de arriba (media +/- desvío entre folds), esta tabla "
+        "junta los casos de los 6 folds en un solo pozo -- cada caso del pool completo se evaluó "
+        "exactamente una vez, con un umbral calibrado sin haberlo visto (cero solapamiento, cero "
+        "fuga de datos), dando 'n' del tamaño del dataset completo en vez de un solo fold chico. "
+        "Intervalo de Wilson al 95%."
+    )
+    return pooled
 
 
 def run_kfold_cv(args, model):
@@ -784,22 +843,11 @@ def run_kfold_cv(args, model):
     evalúa el CLS crudo de DINOv2 (head=None) -- mismos folds/umbral
     calibrado por fold que las corridas CON cabeza entrenada, para tener el
     baseline "DINOv2 puro" con el mismo rigor estadístico (media +/-
-    desvío entre folds), comparable directamente contra v6/v7/etc.
-
-    VARIANTE DE ESTA COPIA (ver docstring del módulo, arriba del todo): los
-    roles de calibración/evaluación quedan INVERTIDOS respecto al fold
-    -- se calibra sobre el fold pequeño (antes "test", ~10-11 secuencias) y
-    se evalúa identity_acc/match_acc/casos reales sobre el resto del pool
-    (antes "train", ~53-54 secuencias combinando lo que antes era train+val).
-    Requiere --kfold-skip-training (aborta si no)."""
+    desvío entre folds), comparable directamente contra v6/v7/etc."""
     from kfold_utils import assign_folds, list_all_sequences, load_fold_assignment, save_fold_assignment, sequence_has_real_gap
     from tracker_failure_dataset import load_new_id_born_cases, load_required_reid_cases
     if not args.kfold_skip_training:
-        raise SystemExit(
-            "Esta copia (calibración invertida) solo tiene sentido con --kfold-skip-training -- "
-            "con cabeza entrenada, entrenar con ~10-11 secuencias como 'train' no sería comparable "
-            "a lo ya publicado (que entrena con ~42-43). Ver docstring del módulo."
-        )
+        from train_linear_reid_head import train_head  # import diferido -- evita el ciclo real (train_linear_reid_head importa de este módulo)
 
     if not args.reid_gap_onnx:
         raise SystemExit("--kfold-cv requiere --reid-gap-onnx (checkpoint ONNX del detector, para correr infer_track_reid_gaps.py)")
@@ -853,61 +901,65 @@ def run_kfold_cv(args, model):
             f"val={len(val_seqs)} (fold {val_fold}), test={len(test_seqs)} (fold {fold_idx})"
         )
 
-        # INVERTIDO respecto al original: calib_seqs es el fold chico (antes
-        # "test", ~10-11 secuencias) -- calibra el umbral. eval_seqs es el
-        # resto del pool combinado (antes "train"+"val", ~53-54 secuencias)
-        # -- evalúa identity_acc/match_acc/casos reales. val_seqs ya no
-        # cumple ningún rol (solo importaba para early-stopping de la
-        # cabeza entrenada, y esta copia aborta si no es --kfold-skip-training).
-        calib_seqs = test_seqs
-        eval_seqs = train_seqs + val_seqs
-
-        calib_index = build_track_index(None, sequence_dirs=calib_seqs)
-        eval_index = build_track_index(None, sequence_dirs=eval_seqs)
+        train_index = build_track_index(None, sequence_dirs=train_seqs)
+        val_index = build_track_index(None, sequence_dirs=val_seqs)
+        test_index = build_track_index(None, sequence_dirs=test_seqs)
 
         fold_output_dir = os.path.join(args.output_dir, f"fold_{fold_idx}")
-        head, best_val_loss = None, float("nan")  # --kfold-skip-training forzado más arriba
+        if args.kfold_skip_training:
+            head, best_val_loss = None, float("nan")
+        else:
+            head, best_val_loss = train_head(model, train_index, val_index, args, fold_output_dir)
 
         if args.match_threshold is not None:
             threshold = args.match_threshold
         else:
-            threshold = _calibrate_threshold(model, calib_index, args, head=head)
+            threshold = _calibrate_threshold(model, train_index, args, head=head)
 
-        synthetic_metrics = _evaluate_synthetic_split(model, eval_index, args, threshold, head, fold_output_dir, "eval")
+        synthetic_metrics = _evaluate_synthetic_split(model, test_index, args, threshold, head, fold_output_dir, "test")
 
         tracker_metrics = {}
-        eval_seq_names = {os.path.basename(s.rstrip("/")) for s in eval_seqs}
+        test_seq_names = {os.path.basename(s.rstrip("/")) for s in test_seqs}
         for tracker in args.trackers:
-            cases = _filter_cases_by_sequences(global_cases[tracker], eval_seq_names)
+            cases = _filter_cases_by_sequences(global_cases[tracker], test_seq_names)
             n_before_gap_filter = len(cases)
             cases = _filter_cases_by_gap_length(cases, args.gap_length_bin)
             print(
                 f"[INFO] fold {fold_idx} tracker={tracker}: {n_before_gap_filter}/{len(global_cases[tracker])} "
-                f"casos globales caen en la porción de EVALUACIÓN de este fold "
+                f"casos globales caen en el test de este fold "
                 f"({len(cases)}/{n_before_gap_filter} tras filtrar gap-length-bin={args.gap_length_bin})"
             )
             tracker_metrics[tracker] = _evaluate_tracker_on_cases(
-                model, args, tracker, eval_index, cases, threshold, head, fold_output_dir, f"{tracker}_fold{fold_idx}",
+                model, args, tracker, test_index, cases, threshold, head, fold_output_dir, f"{tracker}_fold{fold_idx}",
             )
 
         print(
-            f"[INFO] FOLD {fold_idx} resumen: umbral={threshold:.4f} (calibrado sobre {len(calib_seqs)} secuencias) "
-            f"eval identity_acc={synthetic_metrics['identity_acc']:.4f} (sobre {len(eval_seqs)} secuencias)"
+            f"[INFO] FOLD {fold_idx} resumen: umbral={threshold:.4f} best_val_loss={best_val_loss:.4f} "
+            f"synthetic_test identity_acc={synthetic_metrics['identity_acc']:.4f}"
         )
         fold_results.append({
-            "fold": fold_idx,
-            "calibration_seqs": sorted({os.path.basename(s.rstrip("/")) for s in calib_seqs}),
-            "evaluation_seqs": sorted(eval_seq_names),
+            "fold": fold_idx, "val_fold": val_fold,
+            "train_seqs": [os.path.basename(s.rstrip("/")) for s in train_seqs],
+            "val_seqs": [os.path.basename(s.rstrip("/")) for s in val_seqs],
+            "test_seqs": sorted(test_seq_names),
             "threshold": threshold, "best_val_loss": best_val_loss,
             "synthetic": synthetic_metrics, "trackers": tracker_metrics,
         })
 
-    # 3) agregación final: media +/- desvío estándar entre folds
+    # 3) agregación final: media +/- desvío estándar entre folds (protocolo
+    # original) Y accuracy pooleada con intervalo de Wilson (ver docstring
+    # del módulo) -- ambas sobre los MISMOS fold_results, sin cambiar en
+    # absoluto qué calibra/evalúa cada fold.
     _print_kfold_summary(fold_results, args)
+    pooled = _print_pooled_summary(fold_results, args)
     detail_path = os.path.join(args.output_dir, "kfold_results.json")
     with open(detail_path, "w") as f:
         json.dump(fold_results, f, indent=2)
     print(f"[OK] Detalle completo por fold guardado en {detail_path}")
+    pooled_path = os.path.join(args.output_dir, "kfold_pooled_summary.json")
+    with open(pooled_path, "w") as f:
+        json.dump(pooled, f, indent=2)
+    print(f"[OK] Resumen pooleado guardado en {pooled_path}")
     return fold_results
 
 

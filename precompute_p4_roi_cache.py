@@ -25,6 +25,8 @@ Uso:
 Luego:
     python3 analyze_dinov2_nn_baseline.py --split val --embedding-cache p4_roi_cache_val.pt
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'reid_lib'))  # library modules
 import argparse
 import os
 import time
