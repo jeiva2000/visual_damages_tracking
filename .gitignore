@@ -23,3 +23,9 @@ paper_overleaf/
 
 # figuras del README
 !docs/*.png
+
+# salidas de análisis/figuras/videos que solo sirven para el paper -- no versionar
+paper7_comparison_videos/
+compression_analysis_kfoldpool/
+case_diff_visuals/
+debug_visuals_gt32/
