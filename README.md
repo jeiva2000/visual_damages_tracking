@@ -75,7 +75,7 @@ stored in this repository because of its size. It is available on request:
 | `scripts/embedding_analysis/` | Embedding analysis: compression, PCA, dendrograms, isotropy, C4 confusion cases |
 | `scripts/paper_figures/` | Scripts that generate the paper figures |
 | `scripts/paper7_comparison/` | Comparison with prior work [7] (required events, backbone encoder, rendering) |
-| `exp_*` | Detector-provenance experiments (no-video detectors, test_models sweep) and the exclusion of the 10 seen sequences |
+| `exps/` | Experiment scripts: the exclusion of the 10 detector-seen sequences (`exp_exclude_seen/`) and the detector-provenance experiments (`exp_novideo_detector/`, `exp_noglass_detector/`, `exp_custommot2_detector/`, `exp_testmodels/`, `exp_video_ablation/`) |
 | `legacy/` | Earlier diagnostics and example-search scripts, not needed to reproduce the paper |
 | `docs/EXPERIMENT_LOG.md` | Chronological experiment log (run-by-run, in Spanish) |
 
@@ -106,7 +106,7 @@ tau (C4 0.9405, P4-FPN 0.7981, DINOv2 0.6919, OSNet 0.8000, CLIP-VehicleID
 0.7698), all calibrated without the 10 detector-seen sequences. The gallery keeps
 lost identities for up to 200 frames. Metrics (HOTA, MOTA, IDF1, IDSW) are computed
 with TrackEval; the 62 evaluation sequences are selected when scoring
-(`exp_exclude_seen/`).
+(`exps/exp_exclude_seen/`).
 
 Sequences are evaluated one process at a time (8 GB GPU suffices).
 `run_eval_nodedup.py` logs per-sequence errors without failing, so check the log

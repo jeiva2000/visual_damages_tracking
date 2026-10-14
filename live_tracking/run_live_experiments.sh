@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live evaluation of the paper: native tracker, or tracker + external re-identification module.
 # Flags copied from the scripts used for the reported runs (62 evaluation sequences are selected
-# afterwards when scoring; see exp_exclude_seen/). One process, sequential.
+# afterwards when scoring; see exps/exp_exclude_seen/). One process, sequential.
 #
 # Usage:  DETECTOR_PTH=... DETECTOR_CFG=... DATA_ROOT=... GT_ROOT=... \
 #         ./run_live_experiments.sh <method> <tracker> [output_dir]
