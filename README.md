@@ -70,10 +70,11 @@ stored in this repository because of its size. It is available on request:
 |---|---|
 | `live_tracking/` | Live pipeline: `run_eval_nodedup.py` (tracking + TrackEval evaluation), `main_track_nodedup.py` (trackers + module hook), `reid_gallery.py` (gallery: `bury`, `match_newborns`, ageing/pruning), `custom_reid.py` (C4 / P4-FPN / DINOv2 / OSNet / CLIP encoders), `trackeval_api.py`, `run_live_experiments.sh` (the paper's configurations) |
 | `infer_track_reid_gaps.py`, `analyze_reid_gap_failures.py` | Gap-isolated metric: detection and classification of occlusion gaps |
-| `kfold_utils.py`, `compare_kfold_cases.py`, `pool_existing_kfold_results.py` | Offline k-fold identity-accuracy comparison and McNemar tests |
-| `analyze_dinov2_*.py`, `embedding_analysis_dinov2_vs_p4.py`, `plot_*_crops_*.py` | Embedding analysis (compression, PCA, isotropy) |
+| `kfold_utils.py`, `analyze_dinov2_nn_baseline*.py`, `compare_kfold_cases.py`, `pool_existing_kfold_results.py` | Offline k-fold identity-accuracy comparison and McNemar tests |
 | `linear_reid_head.py`, `train_linear_reid_head.py`, `set_reid_model.py`, `train_track_query_reid.py` | Optional trained heads (H1-H4), reported as a separate ablation |
-| `paper_fig_*.py` | Scripts that generate paper figures |
+| `scripts/embedding_analysis/` | Embedding analysis: compression, PCA, dendrograms, isotropy, C4 confusion cases |
+| `scripts/paper_figures/` | Scripts that generate the paper figures |
+| `scripts/paper7_comparison/` | Comparison with prior work [7] (required events, backbone encoder, rendering) |
 | `exp_*` | Detector-provenance experiments (no-video detectors, test_models sweep) and the exclusion of the 10 seen sequences |
 | `legacy/` | Earlier diagnostics and example-search scripts, not needed to reproduce the paper |
 | `docs/EXPERIMENT_LOG.md` | Chronological experiment log (run-by-run, in Spanish) |

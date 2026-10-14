@@ -10,6 +10,8 @@ Reusa el MISMO fold_assignment.json y el MISMO reid_gap_report.json que ya
 uso methods_on_strict_cases.py para "C4 puro" -- resultado 100% comparable
 fila a fila.
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import json
 import os

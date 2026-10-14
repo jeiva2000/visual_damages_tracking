@@ -60,12 +60,14 @@ el MISMO estilo de plot):
     3 curvas superpuestas) y en el summary.json (`cmc_same_video`).
 
 Uso (correr en el servidor, requiere acceso al dataset + cache P4 ya generado):
-    python3 embedding_analysis_dinov2_vs_p4.py --split val \
+    python3 scripts/embedding_analysis/embedding_analysis_dinov2_vs_p4.py --split val \
         --p4-cache p4_roi_cache_val.pt --output-dir embedding_analysis_val
-    python3 embedding_analysis_dinov2_vs_p4.py --kfold-pool --gallery-episodes 300 \
+    python3 scripts/embedding_analysis/embedding_analysis_dinov2_vs_p4.py --kfold-pool --gallery-episodes 300 \
         --p4-cache p4_roi_cache_kfold_pool.pt --p4fpn-cache p4fpn_roi_cache_kfold_pool.pt \
         --output-dir embedding_analysis_kfoldpool
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import json
 import os

@@ -18,6 +18,8 @@ Mide:
      si la correccion "descomprime" los pares distintos sin destruir la
      separacion de los pares iguales.
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import os
 import random
 import sys

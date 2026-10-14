@@ -29,10 +29,12 @@ máximo, un árbol comprimido (C4) y uno disperso (DINOv2/P4-FPN) se ven
 igual de "altos", ocultando justo la compresión que se quiere mostrar.
 
 Uso (correr en el servidor, mismos caches que plot_pca_crops_single_video.py):
-    python3 plot_dendrogram_crops_single_video.py --kfold-pool \
+    python3 scripts/embedding_analysis/plot_dendrogram_crops_single_video.py --kfold-pool \
         --p4-cache p4_roi_cache_kfold_pool.pt --p4fpn-cache p4fpn_roi_cache_kfold_pool.pt \
         --output-dir compression_analysis_kfoldpool
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import os
 import random

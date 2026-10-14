@@ -26,7 +26,7 @@ nada mas que decidir CUANDO cambio el id predicho, no para las imagenes que
 se comparan despues.
 
 Uso:
-    python3 paper7_required_reid_events.py \\
+    python3 scripts/paper7_comparison/paper7_required_reid_events.py \\
         --paper7-mot-dir /path/a/custom_mot_2/TrackEval/data/trackers/mot_challenge/damages-test/<config>/data \\
         --sequences aveo VID_20260118_222031 VID_20260118_222136 VID_20260118_222249 VID_20260118_222318 \\
         --split train --outdir paper7_reid_gap_report
@@ -36,6 +36,8 @@ Luego:
         --required-reid-events paper7_reid_gap_report/required_reid_events.json \\
         --encoder p4 --match-threshold 0.9352 --same-video-only
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import json
 import os

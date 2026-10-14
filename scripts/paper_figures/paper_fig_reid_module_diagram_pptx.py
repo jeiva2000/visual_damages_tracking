@@ -47,11 +47,13 @@ Detalles que evitan resultados degradados, encontrados al exportar:
 El .pptx editable (<out>) conserva siempre el tamaño 13.33x7.5 del ejemplo.
 
 Uso:
-    python3 paper_fig_reid_module_diagram_pptx.py            # solo .pptx
-    python3 paper_fig_reid_module_diagram_pptx.py --export   # + .pdf y .png
-    python3 paper_fig_reid_module_diagram_pptx.py --export-only   # exporta el .pptx
+    python3 scripts/paper_figures/paper_fig_reid_module_diagram_pptx.py            # solo .pptx
+    python3 scripts/paper_figures/paper_fig_reid_module_diagram_pptx.py --export   # + .pdf y .png
+    python3 scripts/paper_figures/paper_fig_reid_module_diagram_pptx.py --export-only   # exporta el .pptx
         # tal como está en disco, sin regenerarlo (respeta ediciones a mano)
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import json
 import math

@@ -22,8 +22,10 @@ identidad" es exactamente el caso difícil detrás del intra_seq_error_rate
 alto que se viene viendo en validación/test.
 
 Uso:
-    python3 analyze_dinov2_layers.py --dinov2-model-name facebook/dinov2-small --split train
+    python3 scripts/embedding_analysis/analyze_dinov2_layers.py --dinov2-model-name facebook/dinov2-small --split train
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import random
 

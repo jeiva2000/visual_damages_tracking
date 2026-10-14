@@ -35,10 +35,12 @@ las identidades siguen agrupándose localmente incluso dentro de un espacio
 comprimido (para conectar con el silhouette), no una medida de compresión.
 
 Uso:
-    python3 plot_embedding_compression.py --kfold-pool --num-identities 1000 \
+    python3 scripts/embedding_analysis/plot_embedding_compression.py --kfold-pool --num-identities 1000 \
         --p4-cache p4_roi_cache_kfold_pool.pt --p4fpn-cache p4fpn_roi_cache_kfold_pool.pt \
         --output-dir compression_analysis
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import os
 import random

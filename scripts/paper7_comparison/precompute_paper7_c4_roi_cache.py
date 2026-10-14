@@ -12,7 +12,7 @@ por stride) en vez de nuestro propio RT-DETRv2 -- MISMO formato de cache
 Uso -- calibracion del umbral de coseno para esta fuente de embedding
 (M4 del checklist de revision: nuestra estrategia de reid aplicada sobre la
 salida de tracking del transformer entrenado de [7]):
-    python3 precompute_paper7_c4_roi_cache.py --split train --output-path paper7_c4_roi_cache_train.pt
+    python3 scripts/paper7_comparison/precompute_paper7_c4_roi_cache.py --split train --output-path paper7_c4_roi_cache_train.pt
 
 Luego:
     python3 analyze_dinov2_nn_baseline.py --split train --embedding-cache paper7_c4_roi_cache_train.pt \\
@@ -22,6 +22,8 @@ Luego:
     modelo pero _embed_batch nunca le pide un forward real -- ver
     embedding_cache en ReIDEpisodeDataset, reid_dataloader.py.)
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import os
 import time

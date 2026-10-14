@@ -16,8 +16,10 @@ coinciden con la fila "Ours, C4 + DeepOC-SORT" de la tabla):
   - GT:     datasets/dataset_split_2/mot_gt/train/<seq>/gt/gt.txt
 
 Uso (en el servidor, dentro del env rtdetr):
-    python3 paper7_render_comparison_videos.py --outdir paper7_comparison_videos
+    python3 scripts/paper7_comparison/paper7_render_comparison_videos.py --outdir paper7_comparison_videos
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import os
 from collections import defaultdict

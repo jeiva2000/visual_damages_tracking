@@ -23,8 +23,10 @@ Usa la misma infraestructura que paper_fig_reid_module_diagram_pptx.py
 (Slide, export vía LibreOffice remoto + Carlito).
 
 Uso:
-    python3 paper_fig_qualitative_native_vs_c4.py --export
+    python3 scripts/paper_figures/paper_fig_qualitative_native_vs_c4.py --export
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import os
 

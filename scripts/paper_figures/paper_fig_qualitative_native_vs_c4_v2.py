@@ -12,9 +12,11 @@ caso de DeepOC-SORT las predicciones publicadas difieren algo de las de la figur
 mismos frames 283 -> 465 e IDs 13 -> 55; cambian cajas y confianza).
 
 Uso:
-    python3 paper_fig_qualitative_native_vs_c4_v2.py --preview          # solo los paneles + mosaico de revisión
-    python3 paper_fig_qualitative_native_vs_c4_v2.py --export           # además PPTX/PDF/PNG (LibreOffice remoto)
+    python3 scripts/paper_figures/paper_fig_qualitative_native_vs_c4_v2.py --preview          # solo los paneles + mosaico de revisión
+    python3 scripts/paper_figures/paper_fig_qualitative_native_vs_c4_v2.py --export           # además PPTX/PDF/PNG (LibreOffice remoto)
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import json
 import os

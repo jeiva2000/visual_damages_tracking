@@ -31,10 +31,12 @@ datos, semilla y t-SNE que la versión normal -- solo cambia el dibujo. Sin
 reducía al 0.28: títulos a 3.3 pt, números de identidad a 1.9 pt).
 
 Uso (correr en el servidor, mismos caches que plot_embedding_compression.py):
-    python3 plot_embedding_crops_by_identity.py --kfold-pool \
+    python3 scripts/embedding_analysis/plot_embedding_crops_by_identity.py --kfold-pool \
         --p4-cache p4_roi_cache_kfold_pool.pt --p4fpn-cache p4fpn_roi_cache_kfold_pool.pt \
         --output-dir compression_analysis_kfoldpool
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import argparse
 import os
 import random

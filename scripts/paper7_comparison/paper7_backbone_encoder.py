@@ -54,6 +54,8 @@ anteriores; esas aparecen recien en el FPN/neck, modulos 15/20/23/26 en
 adelante), asi que no hace falta reproducir la logica de "from index" de
 `parse_model` de Ultralytics para este rango.
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
 import torch
 import torch.nn as nn
 

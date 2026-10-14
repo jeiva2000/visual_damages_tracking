@@ -50,10 +50,13 @@ resolvió el banco; el nativo pierde la identidad). Encontrado con una
 búsqueda sobre las 72 secuencias de las corridas *_alldata.
 
 Uso:
-    python3 paper_fig_reid_module_diagram.py
-    python3 paper_fig_reid_module_diagram.py --tracker botsort --seq <seq> \
+    python3 scripts/paper_figures/paper_fig_reid_module_diagram.py
+    python3 scripts/paper_figures/paper_fig_reid_module_diagram.py --tracker botsort --seq <seq> \
         --true-pid <pid> --gap-before-frame <f> --query-frame <f>
 """
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))))  # repo root
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))), 'live_tracking'))  # custom_reid.py, reid_gallery.py
 import argparse
 import json
 import os
