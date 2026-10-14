@@ -53,7 +53,7 @@ rates should only be compared within a protocol.
 
 72 evaluated vehicle-inspection sequences (17 from the original 360-degree set and
 55 recorded by end users), 400 annotated trajectories, 77,034 annotated boxes,
-47,523 frames, six resolutions, 66 landscape / 6 portrait, 30 fps. Split into 56
+about 47.5k frames, six resolutions, 66 landscape / 6 portrait, 30 fps. Split into 56
 train / 8 validation / 8 test sequences. All visible license plates are
 anonymized. The train/validation/test labels describe annotation and tuning roles,
 not an exclusion from evaluation, since the module has no trainable parameters.
@@ -61,18 +61,14 @@ not an exclusion from evaluation, since the module has no trainable parameters.
 ### Dataset access
 
 The dataset (annotated video sequences and ground-truth trajectories) is not
-stored in this repository because of its size. It is distributed on request:
-
-**Request form: [LINK TO THE REQUEST FORM -- TO BE ADDED]**
-
-Access terms and the anonymization policy (all visible license plates are
-blurred) will be described in the form.
+stored in this repository because of its size. It is available on request:
+**[request form](#)** <!-- replace "#" with the form URL -->.
 
 ## Repository layout
 
 | Path | Contents |
 |---|---|
-| `live_tracking/` | Live pipeline: `run_eval_nodedup.py` (tracking + TrackEval evaluation), `main_track_nodedup.py` (trackers + module hook), `reid_gallery.py` (gallery: `bury`, `match_newborns`, ageing/pruning), `custom_reid.py` (C4 / P4-FPN / DINOv2 / OSNet / CLIP encoders), `trackeval_api.py` |
+| `live_tracking/` | Live pipeline: `run_eval_nodedup.py` (tracking + TrackEval evaluation), `main_track_nodedup.py` (trackers + module hook), `reid_gallery.py` (gallery: `bury`, `match_newborns`, ageing/pruning), `custom_reid.py` (C4 / P4-FPN / DINOv2 / OSNet / CLIP encoders), `trackeval_api.py`, `run_live_experiments.sh` (the paper's configurations) |
 | `infer_track_reid_gaps.py`, `analyze_reid_gap_failures.py` | Gap-isolated metric: detection and classification of occlusion gaps |
 | `kfold_utils.py`, `compare_kfold_cases.py`, `pool_existing_kfold_results.py` | Offline k-fold identity-accuracy comparison and McNemar tests |
 | `analyze_dinov2_*.py`, `embedding_analysis_dinov2_vs_p4.py`, `plot_*_crops_*.py` | Embedding analysis (compression, PCA, isotropy) |
@@ -83,37 +79,38 @@ blurred) will be described in the form.
 
 ## Reproducing the live evaluation
 
-Requires an RT-DETR checkpoint and config (RT-DETR repository), `boxmot==18.0.0`,
-`lap`, `onnxruntime`, `transformers`, and
-[TrackEval](https://github.com/JonathonLuiten/TrackEval) (set `TRACKEVAL_DIR`).
+Requirements: Python with PyTorch, `boxmot==18.0.0`, `lap`, `onnxruntime`,
+`transformers`, `opencv-python`, an RT-DETR checkpoint and config (RT-DETR
+repository), and [TrackEval](https://github.com/JonathonLuiten/TrackEval)
+(set `TRACKEVAL_DIR` to its folder).
 
 ```bash
-# native BoT-SORT
-python live_tracking/run_eval_nodedup.py \
-  --pth-file <detector.pth> --config <rtdetrv2_r101vd_6x_coco.yml> \
-  --data-root <dataset> --gt-root <dataset_gt> --split all \
-  --tracker botsort --conf 0.4 --fps 10 --no-convert-gt \
-  --output-dir out/native_botsort
+export DETECTOR_PTH=<detector.pth> DETECTOR_CFG=<rtdetrv2_r101vd_6x_coco.yml>
+export DATA_ROOT=<dataset> GT_ROOT=<dataset_gt>
 
-# the same tracker + C4 module (training-free)
-python live_tracking/run_eval_nodedup.py ... --tracker botsort \
-  --reid-source c4_puro --reid-stitch \
-  --reid-stitch-cosine-thresh 0.5 --reid-stitch-max-gap 200 \
-  --output-dir out/c4_botsort
+live_tracking/run_live_experiments.sh native botsort out/native_botsort   # native tracker
+live_tracking/run_live_experiments.sh c4     botsort out/c4_botsort       # tracker + C4 module
 ```
 
-Tracker hyperparameters used in the paper are in the paper's Experiments section.
-`--reid-source` selects the signal (`c4_puro`, `p4fpn_puro`, `dinov2_puro`,
-`native_puro` for OSNet/CLIP). Sequences are evaluated one process at a time on an
-8 GB GPU; `run_eval_nodedup.py` logs per-sequence errors without failing, so check
+`<method>` is `native`, `c4`, `p4fpn`, `dinov2`, `osnet` or `clip`; `<tracker>` is
+`bytetrack`, `botsort`, `ocsort` or `deepocsort`. The script sets, per tracker,
+the hyperparameters used in the paper and, per signal, its similarity threshold
+tau (C4 0.9405, P4-FPN 0.7981, DINOv2 0.6919, OSNet 0.8000, CLIP-VehicleID
+0.7698), all calibrated without the 10 detector-seen sequences. The gallery keeps
+lost identities for up to 200 frames. Metrics (HOTA, MOTA, IDF1, IDSW) are computed
+with TrackEval; the 62 evaluation sequences are selected when scoring
+(`exp_exclude_seen/`).
+
+Sequences are evaluated one process at a time (8 GB GPU suffices).
+`run_eval_nodedup.py` logs per-sequence errors without failing, so check the log
 for `[ERROR]` lines and count the output files.
 
 ## Implementation note
 
-Early versions of the module dropped one box when two tracks ended up with the
-same final ID in a frame, which understated identity switches and overstated MOTA.
-The `*_nodedup` files keep both boxes and assign the colliding track a new ID; all
-numbers reported in the paper use this version.
+The `*_nodedup` files keep both boxes when two tracks end up with the same final
+ID in a frame and give the colliding track a new ID; an earlier version dropped
+one of them, which understated identity switches. All numbers in the paper use
+the corrected version.
 
 ## Citation
 
